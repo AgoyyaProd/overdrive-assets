@@ -95,11 +95,22 @@ function cv(row, i) {
   // those columns as Format > Number > Plain text so GViz stops coercing them.
   if (!cell) return null;
   const v = cell.v;
-  // GViz returns dates as "Date(2026,3,10)" – month is 0-indexed
+  // GViz returns dates as "Date(2026,3,10)" (month is 0-indexed) - and a cell
+  // formatted as a time-of-day (e.g. WEBSITE_MATCHES' "time" column) the same
+  // way, but with 3 extra args for hour/minute/second and the date part pinned
+  // to the sheet's day-zero epoch, "Date(1899,11,30,17,0,0)" for 17:00 - the
+  // original 3-arg-only regex left that second form completely unmatched (no
+  // trailing ")" right after the 3rd number), so it fell through and returned
+  // the raw literal string untouched instead of a formatted date OR a time.
   if (typeof v === 'string' && v.startsWith('Date(')) {
-    const m = v.match(/Date\((\d+),(\d+),(\d+)\)/);
+    const m = v.match(/^Date\((\d+),(\d+),(\d+)(?:,(\d+),(\d+),(\d+))?\)$/);
     if (m) {
-      const day=+m[3], mo=+m[2]+1, yr=+m[1];
+      const yr=+m[1], mo=+m[2]+1, day=+m[3];
+      if (m[4] != null && yr === 1899 && mo === 12 && day === 30) {
+        // Epoch-day placeholder date: a time-of-day value, not a real date.
+        const hh=+m[4], mi=+m[5];
+        return (hh<10?'0':'')+hh+':'+(mi<10?'0':'')+mi;
+      }
       return (day<10?'0':'')+day+'/'+(mo<10?'0':'')+mo+'/'+yr;
     }
   }
@@ -656,6 +667,10 @@ async function loadWebsiteStandings() {
         if (map['team_id'] == null) return;
         let j = i + 1;
         const built = [];
+        // Column label lookup that tries every known spelling variant (the sheet's
+        // actual header text for these has drifted at least once already - e.g.
+        // "track_wins" vs "tracks_wins" - so this doesn't bet on one spelling).
+        const col = (...names) => { for (const n of names) if (map[n] != null) return map[n]; return null; };
         let divCellRaw = '';
         while (j < rows.length) {
           const teamId = cv(rows[j], map['team_id']);
@@ -664,12 +679,12 @@ async function loadWebsiteStandings() {
           built.push(en({
             rank: cv(rows[j], map['rank']),
             team_id: String(teamId).toLowerCase(),
-            matches_p: cv(rows[j], map['matches']),
-            matches_w: cv(rows[j], map['wins']),
-            matches_l: cv(rows[j], map['losses']),
-            tracks_w: cv(rows[j], map['track_wins']),
-            tracks_l: cv(rows[j], map['track_losses']),
-            track_diff: cv(rows[j], map['track_delta']),
+            matches_p: cv(rows[j], col('matches','matches_played')),
+            matches_w: cv(rows[j], col('wins','wons','matches_w')),
+            matches_l: cv(rows[j], col('losses','matches_l')),
+            tracks_w: cv(rows[j], col('tracks_wins','track_wins','tracks_w')),
+            tracks_l: cv(rows[j], col('tracks_losses','track_losses','tracks_l')),
+            track_diff: cv(rows[j], col('tracks_delta','track_delta','tracks_diff')),
             points: cv(rows[j], map['points']),
             // Div 2's block has no playoffs_rank column at all (not just blank
             // data) in the current sheet, so this is left null rather than 0
