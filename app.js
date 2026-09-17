@@ -1515,8 +1515,10 @@ function swissData(regionKey, splitId) {
     if (r.aWon) { a.wins++; b.losses++; } else { b.wins++; a.losses++; }
     const aLabel = r.forfeit ? (r.aWon ? 'W' : 'FF') : r.sa;
     const bLabel = r.forfeit ? (r.aWon ? 'FF' : 'W') : r.sb;
-    a.rounds[round] = { opponent: b.name, opponentTeam: S.teams[b.key] || S.teams[b.name] || null, score: aLabel, oppScore: bLabel, win: r.aWon };
-    b.rounds[round] = { opponent: a.name, opponentTeam: S.teams[a.key] || S.teams[a.name] || null, score: bLabel, oppScore: aLabel, win: !r.aWon };
+    // matchKey is carried along so a round cell can open the same match-detail
+    // modal the Schedule page uses, rather than a Swiss-specific one.
+    a.rounds[round] = { opponent: b.name, opponentTeam: S.teams[b.key] || S.teams[b.name] || null, score: aLabel, oppScore: bLabel, win: r.aWon, matchKey: matchKey(m) };
+    b.rounds[round] = { opponent: a.name, opponentTeam: S.teams[a.key] || S.teams[a.name] || null, score: bLabel, oppScore: aLabel, win: !r.aWon, matchKey: matchKey(m) };
   });
   const list = Object.values(teams).map(t => ({ ...t, gd: t.gf - t.ga }));
   // Wins first; then fewer losses (an undefeated 3-0 record should always outrank
@@ -2014,7 +2016,13 @@ function swissTable(regionKey) {
       if (!r) return `<td class="${cellCls}"></td>`;
       const oppTeam = S.teams[ctKey(r.opponent)] || { team_name: dn(r.opponent), logo_url: S.defaultLogo };
       const oppLogo = tlogo(oppTeam, 20, 'swiss-rd-logo');
-      return `<td class="${cellCls}"><div class="swiss-rd-cell ${r.win ? 'win' : 'loss'}">${oppLogo}<div class="swiss-rd-score">${r.score}:${r.oppScore}</div></div></td>`;
+      // Hover tip reuses the same attr(data-tip) tooltip mechanism as the Standings
+      // column headers (.th-tip); the click opens the same match-detail modal the
+      // Schedule page uses, keyed the same way (team pair + date/time), so a Swiss
+      // result and its Schedule listing both open the identical modal.
+      const tip = `${dn(t.name)} ${r.score}:${r.oppScore} ${dn(r.opponent)}`.replace(/"/g, '&quot;');
+      const onclick = r.matchKey ? ` onclick="openMatchModal('${r.matchKey.replace(/'/g, "\\'")}')"` : '';
+      return `<td class="${cellCls}"><div class="swiss-rd-cell swiss-rd-tip ${r.win ? 'win' : 'loss'}" data-tip="${tip}"${onclick}>${oppLogo}<div class="swiss-rd-score">${r.score}:${r.oppScore}</div></div></td>`;
     }).join('');
     const gdCls = t.gd > 0 ? 'gd-pos' : t.gd < 0 ? 'gd-neg' : '';
     // No rounds at all (maxRound === 0) is an edge case with no round columns to
