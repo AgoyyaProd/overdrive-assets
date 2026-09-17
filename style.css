@@ -908,11 +908,24 @@ footer{
    unlike the Standings table - it's never expected to fit one screen width; it
    reuses .st-wrap purely for the horizontal-scroll + "swipe" hint mechanism, with
    its own column styling (not the Standings table's fixed percentage layout). */
+/* Left padding on the wrapper (not the table) reserves room for the qualified/
+   eliminated side bar below, which sits just outside the table's own left edge -
+   it stays inside this scrollable area so it isn't clipped by st-wrap's overflow. */
+.swiss-wrap{padding-left:18px}
 .swiss-tbl{width:100%;border-collapse:separate;border-spacing:0;background:var(--bg-c2)}
 .swiss-tbl th{padding:10px 14px;text-align:center;font-family:var(--ft);font-weight:700;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);background:#000;white-space:nowrap}
 .swiss-tbl th:nth-child(2){text-align:left}
 .swiss-tbl td{padding:10px 14px;text-align:center;font-family:var(--ft);font-weight:700;font-size:13px;color:var(--txt);border-bottom:1px solid var(--brd);white-space:nowrap}
-.swiss-rank{color:var(--muted)}
+.swiss-rank{color:var(--muted);position:relative}
+/* Qualified/eliminated side bar: one continuous coloured strip per group, built
+   from a ::before on each row's leftmost cell. Middle rows have square edges so
+   they butt up against their neighbours; only the group's first and last row get
+   rounded corners, so the whole group reads as a single unbroken bar. */
+.swiss-bar-q::before,.swiss-bar-e::before{content:'';position:absolute;top:0;bottom:0;left:-14px;width:4px}
+.swiss-bar-q::before{background:#5fbf6a}
+.swiss-bar-e::before{background:#e0605a}
+.swiss-bar-first::before{border-radius:3px 3px 0 0}
+.swiss-bar-last::before{border-radius:0 0 3px 3px}
 .swiss-team{text-align:left !important}
 .swiss-team-inner{display:flex;align-items:center;gap:10px;font-weight:900;text-transform:uppercase}
 .swiss-team-logo{width:26px;height:26px;flex-shrink:0}
@@ -1048,4 +1061,3 @@ footer{
 .date-group{margin-bottom:36px}
 .date-hd{font-family:var(--ft);font-weight:900;font-size:24px;letter-spacing:.01em;color:var(--txt);padding:0 4px 14px;text-transform:capitalize}
 .date-hd.today{color:var(--acc)}
-
