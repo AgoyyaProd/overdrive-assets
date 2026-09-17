@@ -1998,24 +1998,38 @@ function swissTable(regionKey) {
   const hasCut = qualifyCount < teams.length;
   // groupCls/isFirst/isLast drive the side bar: only the first and last row of a
   // group get rounded corners, so consecutive rows read as one unbroken strip.
+  // Qualified (green) bars the left edge via the rank cell; eliminated (red) bars
+  // the right edge via the last round cell instead, so the two groups read as
+  // bracketing the table from opposite sides rather than stacking on one edge.
   const rowHtml = (t, groupCls, isFirst, isLast) => {
     const teamObj = S.teams[t.key] || { team_name: dn(t.name), logo_url: S.defaultLogo };
     const logo = tlogo(teamObj, 28, 'swiss-team-logo');
+    const lastBarCls = groupCls === 'e'
+      ? ['swiss-bar-e-anchor', isFirst ? 'swiss-bar-e-first' : '', isLast ? 'swiss-bar-e-last' : ''].filter(Boolean).join(' ')
+      : '';
     const roundCells = Array.from({ length: maxRound }, (_, i) => {
+      const isLastCol = i === maxRound - 1;
+      const cellCls = ['swiss-rd', isLastCol ? lastBarCls : ''].filter(Boolean).join(' ');
       const r = t.rounds[i + 1];
-      if (!r) return `<td class="swiss-rd"></td>`;
+      if (!r) return `<td class="${cellCls}"></td>`;
       const oppTeam = S.teams[ctKey(r.opponent)] || { team_name: dn(r.opponent), logo_url: S.defaultLogo };
       const oppLogo = tlogo(oppTeam, 20, 'swiss-rd-logo');
-      return `<td class="swiss-rd"><div class="swiss-rd-cell ${r.win ? 'win' : 'loss'}">${oppLogo}<div class="swiss-rd-score">${r.score}:${r.oppScore}</div></div></td>`;
+      return `<td class="${cellCls}"><div class="swiss-rd-cell ${r.win ? 'win' : 'loss'}">${oppLogo}<div class="swiss-rd-score">${r.score}:${r.oppScore}</div></div></td>`;
     }).join('');
     const gdCls = t.gd > 0 ? 'gd-pos' : t.gd < 0 ? 'gd-neg' : '';
-    const rankCls = ['swiss-rank', `swiss-bar-${groupCls}`, isFirst ? 'swiss-bar-first' : '', isLast ? 'swiss-bar-last' : ''].filter(Boolean).join(' ');
+    // No rounds at all (maxRound === 0) is an edge case with no round columns to
+    // anchor the right-side bar to - fall back to the GD cell so it never just
+    // silently disappears.
+    const gdBarCls = (groupCls === 'e' && maxRound === 0) ? ' ' + lastBarCls : '';
+    const rankCls = groupCls === 'q'
+      ? ['swiss-rank', 'swiss-bar-q', isFirst ? 'swiss-bar-first' : '', isLast ? 'swiss-bar-last' : ''].filter(Boolean).join(' ')
+      : 'swiss-rank';
     return `<tr>
 <td class="${rankCls}">${t.rank}.</td>
 <td class="swiss-team"><div class="swiss-team-inner">${logo}<span>${t.name}</span></div></td>
 <td>${t.wins}-${t.losses}</td>
 <td>${t.gf}-${t.ga}</td>
-<td class="${gdCls}">${t.gd > 0 ? '+' : ''}${t.gd}</td>
+<td class="${gdCls}${gdBarCls}">${t.gd > 0 ? '+' : ''}${t.gd}</td>
 ${roundCells}
 </tr>`;
   };
