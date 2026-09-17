@@ -1,6 +1,12 @@
 // ─── CONFIG ────────────────────────────────────────────────────────────────
-const SID = '1PxaEXfvatMQRas7CZLwYnMLin-_nAlIR0x-dijqcRfg';
-const PUB_KEY = '2PACX-1vS2BK9BKnaeWyswMDBCN4ZQfD1ds4_7gR1mnLq0JYudStfgav9zgfCpXPMx0gahrtrtcp7unru24svz';
+const SID = '1SgnXorS23IvBM2dbie_QOc756wnOTjqCvx3U2ensfi4';
+// The old PUB_KEY pointed at a "File > Share > Publish to web" link for the
+// previous sheet; that link now 404s on its own (the sheet it published moved
+// on), which is harmless here since gv() below just falls through to the
+// second, SID-based URL - the one that actually matters, and the one that's
+// confirmed working against the new sheet. Left blank until/unless the new
+// sheet is published to web too and this gets a real key of its own.
+const PUB_KEY = '';
 const TWITCH_CH = 'overdrive_tm';
 // ─── TEAM LOGOS (Drive file IDs) ───────────────────────────────────────────
 const LOGOS = {
@@ -108,38 +114,68 @@ function t2o(table) {
 }
 
 // ─── LOADERS ───────────────────────────────────────────────────────────────
-async function lCfg() {
-  const t = await gv('Config'); if (!t) return;
-  t2o(t).forEach(r => {
-    if (r.key === 'active_split') { S.act = r.value || 'spring2026'; S.configActiveSplit = S.act; }
-    if (r.key === 'season_year') S.seasonYear = String(r.value || '').trim();
-    if (r.key === 'polling_interval_default') S.cfg.pd = +r.value || 600;
-    if (r.key === 'polling_interval_match_day') S.cfg.pm = +r.value || 60;
-  });
-}
-async function lSplits() {
-  const t = await gv('Splits');
+// The 2026-09 sheet migration dropped the old Config/Splits tabs - there's no
+// more explicit "active_split" setting anywhere, so the active split is derived
+// from the data instead: whichever split value appears on the LAST row of
+// WEBSITE_MATCHES, the sheet's own convention for "the split being played now"
+// (its rows are entered in play order, so the latest split is always last).
+async function lActiveSplitFromMatches() {
+  const t = await gv('WEBSITE_MATCHES');
   if (!t) return;
-  S.splits = t2o(t).map(r => {
-    // The sheet uses 'tr' as column name for split_id
-    if (!r.split_id && r.tr) r.split_id = r.tr;
-    return r;
-  });
+  const rows = t2o(t).filter(r => r.split != null && String(r.split).trim() !== '');
+  if (!rows.length) return;
+  const last = rows[rows.length - 1];
+  S.act = String(last.split).trim();
+  S.configActiveSplit = S.act;
+  if (last.season) S.seasonYear = String(last.season).trim();
+}
+// S.splits (for the split-switcher dropdown) is now populated as a side effect
+// of parsing WEBSITE_STANDINGS (see loadWebsiteStandings) - there's no separate
+// Splits tab anymore, so this just wires that result in and sets the default
+// VODs split, mirroring what lSplits() used to do.
+async function lSplits() {
+  const { splits } = await loadWebsiteStandings();
+  S.splits = splits;
   if (!S.vodSp) S.vodSp = S.act;
 }
 async function lTeams() {
-  const t = await gv('Teams');
+  // "data_teams" replaced the old separate Teams + Team_History tabs (2026-09
+  // sheet migration): one row per team, current roster only. Its own column
+  // names differ from the site's internal field names, so they're remapped
+  // here rather than everywhere they're read: entity_id -> team_id, team_tag
+  // -> team_short, player1_name/player2_name -> player1/player2 (the names
+  // recentForm()/teamsWithSamePlayers() match rosters on), substitute*_name
+  // -> sub1/sub2. previous_team_name is carried through as-is; there's no
+  // more per-split Team_History lineage, so it's the one signal left for a
+  // rename (teamNoteBadge() only shows a note when teamFor()/Team_History
+  // sets team._note, which this alone doesn't - see lTeamHistory below).
+  const t = await gv('data_teams');
   S.teams = {};
   if (t) {
     t2o(t).forEach(r => {
-      if (!r.team_id) return;
+      const teamId = r.entity_id || r.team_id;
+      if (!teamId) return;
       // Drive view links (/file/d/.../view) are NOT image URLs – use our thumbnail LOGOS instead
       // Priority: 1) logo_url from sheet if it's a valid HTTP URL
       //           2) LOGOS constant (Drive/embedded fallback)
       const rawLogo = String(r.logo_url || '');
       const isFullUrl = rawLogo.startsWith('http');
-      const logo = (isFullUrl ? rawLogo : '') || LOGOS[r.team_id] || '';
-      S.teams[r.team_id] = { ...r, logo_url: logo, team_name: dn(r.team_name), team_short: dn(r.team_short) };
+      const logo = (isFullUrl ? rawLogo : '') || LOGOS[teamId] || '';
+      S.teams[teamId] = {
+        ...r,
+        team_id: teamId,
+        logo_url: logo,
+        team_name: dn(r.team_name),
+        team_short: dn(r.team_tag || r.team_short || ''),
+        player1: r.player1_name || r.player1 || '',
+        player2: r.player2_name || r.player2 || '',
+        sub1: r.substitute1_name || r.sub1 || '',
+        sub2: r.substitute2_name || r.sub2 || '',
+        // teamFor() passes this straight through to teamNoteBadge() as-is when
+        // there's no Team_History override for the split (there never is now -
+        // see lTeamHistory below), so this is the note the "i" badge shows.
+        _note: r.previous_team_name ? `Formerly ${dn(r.previous_team_name)}` : '',
+      };
     });
   }
   // The site shows exactly the teams registered in the Teams tab - nothing else.
@@ -159,12 +195,15 @@ async function lTeams() {
 }
 // A team's name, logo, and roster can change between splits (renames, rebrands,
 // roster moves) — editing the Teams tab in place would rewrite that identity
-// retroactively across every past result too. Team_History holds one row per
-// team_id + split_id with whatever was true THAT split; any field left blank
-// falls back to the split before it, or to the base Teams-tab row if nothing in
-// its history overrides it either. An optional note (shown as a small clickable
-// "i" badge next to the name) explains what changed, mirroring Liquipedia's
-// "formerly X" footnotes.
+// retroactively across every past result too. Team_History used to hold one row
+// per team_id + split_id with whatever was true THAT split, letting every stat
+// that reads teamFor(id, splitId) show a team exactly as it was at the time.
+// The 2026-09 sheet migration dropped this tab in favour of a single
+// previous_team_name field on data_teams (see lTeams) - there's no more
+// per-split lineage, just "current" and "one step back". gv() below simply
+// fails to find the tab and returns null, so this is now a no-op that leaves
+// S.teamHistory empty; teamFor() already falls back to the plain Teams-tab
+// record whenever it finds no history for a team, which is every team now.
 async function lTeamHistory() {
   const t = await gv('Team_History');
   S.teamHistory = {};
@@ -470,41 +509,73 @@ function pd(s) {
   if (parts.length === 3 && parts[2].length === 4) return new Date(+parts[2], +parts[1]-1, +parts[0]);
   return null;
 }
-// Load the combined Schedule+Results tab (tries multiple names)
-let _srCache = null;
-async function loadScheduleResults(sp) {
-  const split = S.splits.find(x => x.split_id === sp);
-  // Try configured tab first, then all known name variants
-  // Try ALL possible naming variants - GViz silently returns Config when tab not found
-  const splitTab = split?.schedule_tab;
-  const tabs = [
-    splitTab,                           // from Splits config tab
-    'Schedule_Results',                 // NEW: single combined tab for the whole project
-    'Schedule_Results_Spring_2026',     // with underscores
-    'Schedule_Results_Spring2026',      // without underscore before year
-    'Schedule_Spring_2026',             // original with underscores
-    'Schedule_Spring2026',              // original without underscore
-    'Results_Spring2026',               // shorter variants
-    'Results_Spring_2026',
-    'MatchResults_Spring2026',
-    'MatchResults_Spring_2026',
-    'Schedule_Results_Printemps_2026',  // French variant
-    'Schedule',
-    'Calendrier',
-  ].filter(Boolean).filter((v,i,a) => a.indexOf(v)===i);
-  // Validate returned table has schedule columns (not Config fallback)
-  // GViz silently returns first sheet when tab not found
-  for (const tab of tabs) {
-    const t = await gv(tab);
-    if (t && t.rows?.length) {
-      // Validate it's actually schedule data (has team columns), not Config fallback
-      const sample = t2o(t)[0] || {};
-      const isSchedule = 'team_a_id' in sample || 'team_b_id' in sample || 'division' in sample || 'status' in sample;
-      if (!isSchedule) { console.warn('[GViz] Tab', tab, 'returned wrong data (Config fallback?), skipping'); continue; }
-      _srCache = {sp, tab, t}; return t;
-    }
+// WEBSITE_MATCHES (2026-09 sheet migration) replaced the old per-split
+// Schedule_Results-style tabs with a single unified tab covering every match:
+// Division 1/2 regular season+playoffs, Promotion, Barrage, Open Qualifier and
+// (once it returns) Continentals - all distinguished only by the free-text
+// "event" column (e.g. "Division 1", "Division 1 Playoffs", "Open Qualifier 1
+// Oceasia"). classifyEvent() turns that text into the same legacy
+// "division"/"match_id" shape the rest of the site already expects, so none of
+// the downstream rendering code (mc(), oqGroups(), continentalsMatches(), ...)
+// needed to change.
+function classifyEvent(eventRaw) {
+  const e = String(eventRaw || '').trim();
+  const el = e.toLowerCase();
+  if (!e) return { division: '', matchId: '' };
+  const divMatch = el.match(/division\s*(\d)/);
+  if (divMatch) {
+    const n = divMatch[1];
+    return { division: el.includes('playoff') ? `Div ${n} Playoffs` : `Div ${n}`, matchId: '' };
   }
-  return null;
+  if (el.includes('promo')) return { division: 'Promo', matchId: '' };
+  if (el.includes('barrage')) return { division: 'Barrage', matchId: '' };
+  const oqMatch = e.match(/open qualifier\s*(\d+)?\s*(.*)/i);
+  if (oqMatch && (oqMatch[1] || oqMatch[2])) {
+    const round = (oqMatch[1] || '').trim();
+    const region = (oqMatch[2] || '').trim();
+    const matchId = [region, round].filter(Boolean).join(' ').trim().toUpperCase() || e.toUpperCase();
+    return { division: 'Open Qualifier', matchId };
+  }
+  const ctMatch = e.match(/continentals\s*(.*)/i);
+  if (ctMatch) {
+    const rest = (ctMatch[1] || '').trim();
+    return { division: 'Continentals', matchId: rest || e };
+  }
+  // Unrecognized event text: pass it through as-is rather than silently dropping the row.
+  return { division: e, matchId: '' };
+}
+// Maps one WEBSITE_MATCHES row (t2o-normalized keys: teama_id/teamb_id/
+// teama_score/teamb_score/time/event/trackN_name/trackN_a_score/trackN_b_score/...)
+// onto the legacy field names the rest of the codebase already reads
+// (team_a_id/team_b_id/score_a/score_b/time_cest/division/match_id/trackN_a/trackN_b).
+function normalizeMatchRow(r) {
+  const { division, matchId } = classifyEvent(r.event);
+  const out = {
+    ...r,
+    team_a_id: r.teama_id || r.team_a_id || '',
+    team_b_id: r.teamb_id || r.team_b_id || '',
+    team_a_name: r.teama_name || r.team_a_name || '',
+    team_b_name: r.teamb_name || r.team_b_name || '',
+    score_a: r.teama_score != null ? r.teama_score : r.score_a,
+    score_b: r.teamb_score != null ? r.teamb_score : r.score_b,
+    time_cest: r.time || r.time_cest || '',
+    division,
+    match_id: matchId,
+    split: r.split != null ? String(r.split).trim() : r.split,
+  };
+  for (let i = 1; i <= 5; i++) {
+    if (out[`track${i}_a_score`] != null) out[`track${i}_a`] = out[`track${i}_a_score`];
+    if (out[`track${i}_b_score`] != null) out[`track${i}_b`] = out[`track${i}_b_score`];
+  }
+  return out;
+}
+let _wmCache = null; // flat array of every normalized match row, every split
+async function loadWebsiteMatches() {
+  if (_wmCache) return _wmCache;
+  const t = await gv('WEBSITE_MATCHES');
+  if (!t) { _wmCache = []; return []; }
+  _wmCache = t2o(t).filter(r => r.teama_id && r.teamb_id).map(normalizeMatchRow);
+  return _wmCache;
 }
 
 // Builds {sched, res} for a split without touching S.sched/S.res, so callers such as the
@@ -512,26 +583,18 @@ async function loadScheduleResults(sp) {
 function enrichScheduleRows(rows) {
   return rows.map(r => ({
     ...r,
-    status: (()=>{ const s=(r.status||'').trim().toLowerCase(); const map={'done':'DONE','live':'LIVE','confirmed':'confirmed','check':'CHECK','pending':'pending','cancelled':'cancelled'}; return map[s]||s; })(),
+    status: (()=>{ const s=(r.status||'').trim().toLowerCase(); const map={'done':'DONE','completed':'DONE','complete':'DONE','live':'LIVE','confirmed':'confirmed','scheduled':'confirmed','check':'CHECK','pending':'pending','cancelled':'cancelled','canceled':'cancelled'}; return map[s]||s; })(),
     dO: pd(r.date),
     A: S.teams[(r.team_a_id||'').toLowerCase()] || S.teams[r.team_a_id] || {team_name:r.team_a_id, logo_url:S.defaultLogo},
     B: S.teams[(r.team_b_id||'').toLowerCase()] || S.teams[r.team_b_id] || {team_name:r.team_b_id, logo_url:S.defaultLogo}
   })).sort((a, b) => (a.dO||new Date(0)) - (b.dO||new Date(0)));
 }
 async function buildScheduleForSplit(sp) {
-  const t = _srCache?.sp === sp ? _srCache.t : await loadScheduleResults(sp);
-  if (!t) return { sched: [], res: [] };
-  const allRows = t2o(t);
-  const rows = allRows.map(r => {
-    const findKey = (...names) => names.find(n => r[n] !== undefined && r[n] !== null);
-    const kA = findKey('team_a_id','team_a','equipe_a','team1_id','team1','home');
-    const kB = findKey('team_b_id','team_b','equipe_b','team2_id','team2','away');
-    if (kA && kB && r[kA] && r[kB]) return {...r, team_a_id: r[kA], team_b_id: r[kB]};
-    return r;
-  }).filter(r => r.team_a_id && r.team_b_id);
-  const hasSplitCol = rows.some(r => r.split);
-  const strictScoped = hasSplitCol ? rows.filter(r => !r.split || r.split === sp) : rows;
-  const scopedRows = strictScoped.length ? strictScoped : rows;
+  const allRows = await loadWebsiteMatches();
+  if (!allRows.length) return { sched: [], res: [] };
+  const hasSplitCol = allRows.some(r => r.split);
+  const strictScoped = hasSplitCol ? allRows.filter(r => !r.split || String(r.split) === String(sp)) : allRows;
+  const scopedRows = strictScoped.length ? strictScoped : allRows;
   const sched = enrichScheduleRows(scopedRows);
   const res = scopedRows.filter(r => r.score_a != null || r.score_b != null).map(r => ({...r}));
   return { sched, res };
@@ -540,50 +603,103 @@ async function lSched(sp) {
   const { sched, res } = await buildScheduleForSplit(sp);
   S.sched = sched; S.res = res;
 }
+// WEBSITE_STANDINGS (2026-09 sheet migration) replaced the old one-tab-per-split
+// layout (Standings_Spring2026, Standings_Fall2026, ...) with a single tab that
+// stacks every split vertically instead: a "season | split | event" metadata row
+// (numeric split id, e.g. 1 or 2) announces a block, immediately followed by a
+// real header row ("division | rank | team_id | ...") repeated once per division,
+// side by side (Div 1's columns, a blank spacer column, then Div 2's columns) -
+// and Div 2's block is one column narrower (no playoffs_rank) than Div 1's, so
+// column positions can't be assumed fixed even between the two halves of the same
+// row. gv()'s headers=1 treats only the sheet's very first physical row as a
+// header (the literal "selectors/season/split/event" line), which isn't useful
+// here - so this walks t.rows directly, finding each metadata row and each
+// header row by their own cell content instead of relying on t.cols.
+let _standingsCache = null; // { bySplit: { '1': {d1,d2}, ... }, splits: [{split_id,label}] }
+async function loadWebsiteStandings() {
+  if (_standingsCache) return _standingsCache;
+  const t = await gv('WEBSITE_STANDINGS');
+  const bySplit = {};
+  const splitsSeen = [];
+  if (t) {
+    const rows = t.rows || [];
+    const nCols = Math.max((t.cols || []).length, 30);
+    let currentSplitId = null;
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const c0 = cv(r, 0), c1 = cv(r, 1);
+      // Metadata row: "2026 | 1 | Division 1 | ..." - a year-sized number in col A
+      // and a small split number in col B. The very next row carries the same
+      // split as a text label ("spring"/"fall" in col B) used only for display.
+      if (c0 != null && c0 !== '' && !isNaN(+c0) && +c0 > 1900 && c1 != null && c1 !== '' && !isNaN(+c1)) {
+        currentSplitId = String(c1).trim();
+        const labelText = String(cv(rows[i + 1], 1) || '').trim();
+        if (currentSplitId && !splitsSeen.some(s => s.split_id === currentSplitId)) {
+          splitsSeen.push({ split_id: currentSplitId, label: labelText ? (labelText[0].toUpperCase() + labelText.slice(1) + ' ' + c0) : ('Split ' + currentSplitId) });
+        }
+        continue;
+      }
+      if (String(c0 ?? '').trim().toLowerCase() !== 'division') continue;
+      // Header row: one "division" cell per division block sharing this row -
+      // typically two (Div 1, Div 2), but this doesn't assume exactly two.
+      const starts = [];
+      for (let ci = 0; ci < nCols; ci++) {
+        if (String(cv(r, ci) ?? '').trim().toLowerCase() === 'division') starts.push(ci);
+      }
+      starts.forEach((startCol, si) => {
+        const endCol = si + 1 < starts.length ? starts[si + 1] : nCols;
+        const map = {};
+        for (let ci = startCol; ci < endCol; ci++) {
+          const label = String(cv(r, ci) ?? '').trim().toLowerCase();
+          if (label) map[label] = ci;
+        }
+        if (map['team_id'] == null) return;
+        let j = i + 1;
+        const built = [];
+        let divCellRaw = '';
+        while (j < rows.length) {
+          const teamId = cv(rows[j], map['team_id']);
+          if (teamId == null || teamId === '') break;
+          if (!divCellRaw) divCellRaw = String(cv(rows[j], map['division']) ?? '').trim();
+          built.push(en({
+            rank: cv(rows[j], map['rank']),
+            team_id: String(teamId).toLowerCase(),
+            matches_p: cv(rows[j], map['matches']),
+            matches_w: cv(rows[j], map['wins']),
+            matches_l: cv(rows[j], map['losses']),
+            tracks_w: cv(rows[j], map['track_wins']),
+            tracks_l: cv(rows[j], map['track_losses']),
+            track_diff: cv(rows[j], map['track_delta']),
+            points: cv(rows[j], map['points']),
+            // Div 2's block has no playoffs_rank column at all (not just blank
+            // data) in the current sheet, so this is left null rather than 0
+            // when the label was never found in this block's header slice.
+            playoffs_rank: map['playoffs_rank'] != null ? cv(rows[j], map['playoffs_rank']) : null,
+            overdrive_points: cv(rows[j], map['overdrive_points']),
+            // The old sheet had an explicit "Champ: X" column read straight into
+            // this flag; the new one doesn't, so per the site's own convention,
+            // playoffs_rank 1 stands in for it everywhere .champion is read
+            // (this table's own gold-row styling, and the career title-count /
+            // "Overdrive Record" aggregation on a team's profile modal).
+            champion: String((map['playoffs_rank'] != null ? cv(rows[j], map['playoffs_rank']) : '') ?? '').trim() === '1',
+          }));
+          j++;
+        }
+        built.sort((a, b) => +a.rank - +b.rank);
+        const divNum = /2/.test(divCellRaw) ? '2' : '1';
+        if (!bySplit[currentSplitId]) bySplit[currentSplitId] = { d1: [], d2: [] };
+        if (divNum === '2') bySplit[currentSplitId].d2 = built; else bySplit[currentSplitId].d1 = built;
+      });
+    }
+  }
+  _standingsCache = { bySplit, splits: splitsSeen };
+  return _standingsCache;
+}
 // Builds {d1, d2} for a split without touching S.d1/S.d2, so callers such as the Home
 // page can read one split independently of what lStand() last loaded.
 async function buildStandingsForSplit(sp) {
-  const split = S.splits.find(x => x.split_id === sp);
-  const tab = split?.standings_tab || 'Standings_Spring2026';
-  const t = await gv(tab); if (!t) return { d1: [], d2: [] };
-  // The tab can also carry Continentals blocks (AMERICAS/EMEA/APAC/NCSA) lower down,
-  // whose own rank/team_id/OVPTS columns sometimes line up with the Div 1 header
-  // positions. Those rows must never be read as Div 1/Div 2 rows, so they (and any
-  // embedded header row announcing them) are excluded before the block build below.
-  const REGIONS = ['americas', 'emea', 'apac', 'ncsa'];
-  const isNoise = r => {
-    const cells = (r.c || []).map(c => String(c?.v ?? '').trim().toLowerCase());
-    if (cells.some(v => REGIONS.includes(v))) return true;
-    if (cells.includes('team_id') && (cells.includes('ovpts') || cells.includes('champ'))) return true;
-    return false;
-  };
-  const allRows = t.rows.filter(r => r.c?.some(c => c?.v != null) && !isNoise(r));
-
-  // Standings tabs do not all share the same column layout: some carry extra
-  // Champ/OVPTS columns in the Div 1 block, shifting Div 2 to the right. Find each
-  // block from its header labels so both layouts read correctly.
-  const labels = (t.cols || []).map(c => String(c?.label || '').trim().toLowerCase());
-  const at = name => { const out = []; labels.forEach((l,i) => { if (l === name) out.push(i); }); return out; };
-  const ranks = at('rank'), teams = at('team_id'), champs = at('champ');
-  const d1c = { rank: ranks[0] ?? 1,  team: teams[0] ?? 2,  champ: champs[0] ?? 10 };
-  const d2c = { rank: ranks[1] ?? 12, team: teams[1] ?? 13, champ: champs[1] ?? 21 };
-  // The stat columns always follow team_id in the same order within each block.
-  const stats = c => ({ p: c.team+1, w: c.team+2, l: c.team+3, tw: c.team+4, tl: c.team+5, td: c.team+6, pts: c.team+7 });
-
-  const build = c => {
-    const s = stats(c);
-    return allRows
-      .filter(r => { const v = cv(r, c.rank); return v != null && !isNaN(+v) && +v > 0; })
-      .map(r => en({
-        rank: cv(r, c.rank), team_id: (cv(r, c.team) || '').toLowerCase(),
-        matches_p: cv(r, s.p), matches_w: cv(r, s.w), matches_l: cv(r, s.l),
-        tracks_w: cv(r, s.tw), tracks_l: cv(r, s.tl), track_diff: cv(r, s.td), points: cv(r, s.pts),
-        champion: String(cv(r, c.champ) || '').trim().toLowerCase() === 'x'
-      }))
-      .filter(r => r.team_id)
-      .sort((a,b) => +a.rank - +b.rank);
-  };
-  return { d1: build(d1c), d2: build(d2c) };
+  const { bySplit } = await loadWebsiteStandings();
+  return bySplit[sp] || { d1: [], d2: [] };
 }
 async function lStand(sp) {
   const { d1, d2 } = await buildStandingsForSplit(sp);
@@ -1038,18 +1154,8 @@ async function fetchSplitStandings(splitId) {
 let _allSchedCache = null;
 async function fetchAllScheduleRows() {
   if (_allSchedCache) return _allSchedCache;
-  const t = _srCache?.t || await loadScheduleResults(S.act);
-  if (!t) { _allSchedCache = []; return []; }
-  const allRows = t2o(t);
-  const rows = allRows.map(r => {
-    const findKey = (...names) => names.find(n => r[n] !== undefined && r[n] !== null);
-    const kA = findKey('team_a_id','team_a','equipe_a','team1_id','team1','home');
-    const kB = findKey('team_b_id','team_b','equipe_b','team2_id','team2','away');
-    if (kA && kB && r[kA] && r[kB]) return { ...r, team_a_id: r[kA], team_b_id: r[kB] };
-    return r;
-  }).filter(r => r.team_a_id && r.team_b_id);
-  _allSchedCache = rows;
-  return rows;
+  _allSchedCache = await loadWebsiteMatches();
+  return _allSchedCache;
 }
 // Groups a team's completed matches (in one specific split) by period: works for any split,
 // past or present, since all rows live in the same combined tab.
@@ -1360,7 +1466,7 @@ function mc(m) {
 // labeled "AMERICAS" in the UI.
 const OQ_REGIONS = [
   { key:'EMEA', label:'EMEA', prefix:'EMEA' },
-  { key:'APAC', label:'APAC', prefix:'APAC' },
+  { key:'APAC', label:'Oceasia', prefix:'OCEASIA' }, // sheet renamed this region "Oceasia" (was "APAC"); internal key kept as-is
   { key:'AMERICAS', label:'AMERICAS', prefix:'NCSA' },
 ];
 // Groups a region's Open Qualifier rows by match_id (e.g. all "APAC 1" rows are one
@@ -2765,12 +2871,12 @@ function pgHowToPlay() {
 <p class="htp-p">Divisions aren't fixed. At the end of each split, the bottom of Division 1 and the top of Division 2 meet in the Barrage, a direct promotion/relegation series. Win it as a Division 2 side and you're up. Lose it as a Division 1 side and you're down. It's the mechanism that keeps both divisions honest.</p>
 
 <div class="htp-sec">OPEN QUALIFIER</div>
-<p class="htp-p">Division 1, Division 2 and the Barrage are for teams already inside the league. The Open Qualifier is how everyone else gets in, open to any duo, no invite needed. It runs across three regions: EMEA, APAC and NCSA, each playing through 8 qualifier steps, two per weekend, over four weekends. Every step is its own bracket. Show up, win your matches, and you're through.</p>
-<p class="htp-p">What "through" means depends on the region. In APAC and NCSA, the winner of each qualifier step earns their spot at Continentals: one team, straight through. EMEA sends two. Both finalists of each EMEA qualifier step, the winner and the runner-up, advance to Continentals, not just the champion.</p>
+<p class="htp-p">Division 1, Division 2 and the Barrage are for teams already inside the league. The Open Qualifier is how everyone else gets in, open to any duo, no invite needed. It runs across three regions: EMEA, Oceasia and NCSA, each playing through 8 qualifier steps, two per weekend, over four weekends. Every step is its own bracket. Show up, win your matches, and you're through.</p>
+<p class="htp-p">What "through" means depends on the region. In Oceasia and NCSA, the winner of each qualifier step earns their spot at Continentals: one team, straight through. EMEA sends two. Both finalists of each EMEA qualifier step, the winner and the runner-up, advance to Continentals, not just the champion.</p>
 
 <div class="htp-sec">CONTINENTALS</div>
 <p class="htp-p">Continentals is the final phase for each region, where every team that came through the Open Qualifier meets again for a shot at the main league. It plays out in two stages: a Swiss stage first, where records decide who's still in contention, then Playoffs among the best of that stage.</p>
-<p class="htp-p">The Playoffs decide who earns an Up & Downs spot: 2 from EMEA, 1 from APAC, and 1 from AMERICAS.</p>
+<p class="htp-p">The Playoffs decide who earns an Up & Downs spot: 2 from EMEA, 1 from Oceasia, and 1 from AMERICAS.</p>
 
 <div class="htp-sec">UP & DOWNS</div>
 <p class="htp-p">Up & Downs is the last step in. The teams that earned their spot through Continentals face the bottom 4 teams of Division 2 in a direct promotion series, for a place in the main OverDrive league itself.</p>
@@ -3160,6 +3266,8 @@ async function changeSplit(sp) {
 // ─── POLLING ───────────────────────────────────────────────────────────────
 async function refresh() {
   _allSchedCache = null; // force a fresh combined-tab fetch this cycle (see loadScheduleAllSplits)
+  _wmCache = null; // and re-fetch WEBSITE_MATCHES itself (see loadWebsiteMatches)
+  _standingsCache = null; // force a fresh WEBSITE_STANDINGS fetch this cycle (see loadWebsiteStandings)
   await Promise.all([lSched(S.act), lStand(S.act), lRes(S.act), lArt(), lVod(), lRank(), lOver(), loadHomeSplitData(), loadScheduleAllSplits()]);
   render(); poll();
 }
@@ -3554,7 +3662,7 @@ async function init() {
   }, 8000);
 
   try {
-    await lCfg();
+    await lActiveSplitFromMatches();
     await lSplits();
     await lTeams();
     await lTeamHistory();
