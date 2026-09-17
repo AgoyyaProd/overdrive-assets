@@ -42,7 +42,7 @@ const LOGOS = {
 const S = {
   cfg:{ pd:600, pm:60 },
   splits:[], act:'spring2026', configActiveSplit:'spring2026',
-  teams:{}, d1:[], d2:[], sched:[], res:[], art:[], vods:[], rank:[], rankDiv:'all', over:[], overYear:'', seasonYear:'', defaultLogo:'',
+  teams:{}, d1:[], d2:[], continentalsStandings:[], sched:[], res:[], art:[], vods:[], rank:[], rankDiv:'all', over:[], overYear:'', seasonYear:'', defaultLogo:'',
   homeSched:[], homeD1:[], homeD2:[],
   schedAllRows:[], schedSplit:'all', schedMode:'all', schedRegion:'EMEA', schedOQ:'',
   page:'home',
@@ -676,6 +676,11 @@ async function loadWebsiteStandings() {
             // when the label was never found in this block's header slice.
             playoffs_rank: map['playoffs_rank'] != null ? cv(rows[j], map['playoffs_rank']) : null,
             overdrive_points: cv(rows[j], map['overdrive_points']),
+            // Only present on the Continentals block: which region this row belongs
+            // to (e.g. "EMEA", "Oceasia", "NCSA"), straight from its "event" column -
+            // this is how continentalsStandingsSection() scopes the final standings
+            // to the right Regionals page, no cross-referencing needed.
+            event: map['event'] != null ? cv(rows[j], map['event']) : null,
             // The old sheet had an explicit "Champ: X" column read straight into
             // this flag; the new one doesn't, so per the site's own convention,
             // playoffs_rank 1 stands in for it everywhere .champion is read
@@ -686,9 +691,20 @@ async function loadWebsiteStandings() {
           j++;
         }
         built.sort((a, b) => +a.rank - +b.rank);
-        const divNum = /2/.test(divCellRaw) ? '2' : '1';
-        if (!bySplit[currentSplitId]) bySplit[currentSplitId] = { d1: [], d2: [] };
-        if (divNum === '2') bySplit[currentSplitId].d2 = built; else bySplit[currentSplitId].d1 = built;
+        if (!bySplit[currentSplitId]) bySplit[currentSplitId] = { d1: [], d2: [], continentals: [] };
+        // A "Continentals" block (added for Overdrive-Points management) shares
+        // this same division/rank/team_id/... header shape but isn't Division 1
+        // or 2 - divCellRaw wouldn't contain a bare "1"/"2" digit for it, but
+        // checking for "continental" explicitly (rather than just falling back
+        // to d1 whenever the digit test fails) avoids silently overwriting
+        // Division 1's real standings with this block's rows.
+        const dc = divCellRaw.toLowerCase();
+        if (dc.includes('continental')) {
+          bySplit[currentSplitId].continentals = built;
+        } else {
+          const divNum = /2/.test(divCellRaw) ? '2' : '1';
+          if (divNum === '2') bySplit[currentSplitId].d2 = built; else bySplit[currentSplitId].d1 = built;
+        }
       });
     }
   }
@@ -699,11 +715,11 @@ async function loadWebsiteStandings() {
 // page can read one split independently of what lStand() last loaded.
 async function buildStandingsForSplit(sp) {
   const { bySplit } = await loadWebsiteStandings();
-  return bySplit[sp] || { d1: [], d2: [] };
+  return bySplit[sp] || { d1: [], d2: [], continentals: [] };
 }
 async function lStand(sp) {
-  const { d1, d2 } = await buildStandingsForSplit(sp);
-  S.d1 = d1; S.d2 = d2;
+  const { d1, d2, continentals } = await buildStandingsForSplit(sp);
+  S.d1 = d1; S.d2 = d2; S.continentalsStandings = continentals || [];
 }
 async function lRes(sp) {
   // Results are loaded by lSched() from the combined tab – this is a no-op
@@ -2222,6 +2238,39 @@ ${lbHtml ? `<div class="bkt-section"><div class="bkt-section-title">Lower Bracke
 </div>`;
 }
 
+// Final Continentals standings (rank + Overdrive Points, added to WEBSITE_STANDINGS
+// for Overdrive-Points bookkeeping): each row carries its region in the "event"
+// column (e.g. "EMEA", "Oceasia", "NCSA") - matched here against the region's
+// label/prefix/key (any of the three, case-insensitively) so this doesn't care
+// which exact spelling the sheet uses. Falls back to cross-referencing that
+// region's own Swiss stage participants only for rows with no event value at
+// all (e.g. older data entered before this column existed).
+function continentalsStandingsSection(regionKey, splitId) {
+  const sp = splitId || S.act;
+  const rows = S.continentalsStandings || [];
+  if (!rows.length) return '';
+  const region = OQ_REGIONS.find(r => r.key === regionKey);
+  const wantedNames = new Set([region?.key, region?.label, region?.prefix].filter(Boolean).map(s => s.trim().toLowerCase()));
+  const withEvent = rows.filter(r => r.event != null && String(r.event).trim() !== '');
+  const noEvent = rows.filter(r => r.event == null || String(r.event).trim() === '');
+  let scoped = withEvent.filter(r => wantedNames.has(String(r.event).trim().toLowerCase()));
+  if (noEvent.length) {
+    const swiss = swissData(regionKey, sp);
+    const regionTeamKeys = new Set(swiss.teams.map(t => t.key));
+    scoped = scoped.concat(noEvent.filter(r => regionTeamKeys.has(ctKey(r.team_id))));
+  }
+  if (!scoped.length) return '';
+  const hasRecord = scoped.some(r => r.matches_w != null && r.matches_w !== '');
+  const trs = scoped.map(r => {
+    const team = teamFor(r.team || r.team_id, sp);
+    const logo = `<div class="tlogo-box">${tlogo(team, 90)}</div>`;
+    const teamName = `${team?.team_name || r.team_id || '?'}`;
+    const recordCell = hasRecord ? `<td>${r.matches_w ?? '-'}-${r.matches_l ?? '-'}</td>` : '';
+    return `<tr class="${r.champion ? 'champ' : ''}" onclick="openTeamModal('${r.team_id}')"><td class="rank-cell"><span class="rn">${r.rank}</span></td><td class="team-cell"><div class="tc">${logo}<span class="st-tname">${teamName}</span>${teamNoteBadge(team)}</div></td>${recordCell}<td class="pts">${r.overdrive_points ?? '-'}</td></tr>`;
+  });
+  return `<div class="ct-sh" style="margin-top:36px">Final Standings</div>
+<div class="st-wrap"><table class="stt"><thead><tr><th>Rank</th><th>Team</th>${hasRecord ? '<th><span class="th-tip" data-tip="Match Record (W-L)">RECORD</span></th>' : ''}<th><span class="th-tip" data-tip="Overdrive Points">OVPTS</span></th></tr></thead><tbody>${trs.join('')}</tbody></table></div>`;
+}
 function pgLeagues() {
   const region = S.regTab || 'EMEA';
   const regionDef = OQ_REGIONS.find(r => r.key === region) || OQ_REGIONS[0];
@@ -2247,6 +2296,7 @@ ${oqSection}
 ${swissTable(region)}
 <div class="ct-sh" style="margin-top:36px">Playoffs</div>
 ${playoffsBracketHtml(region)}
+${continentalsStandingsSection(region)}
 </div>`;
 }
 
@@ -3180,6 +3230,65 @@ const PAGE_TITLES = {
   media:'Media Kit – OverDrive - Event Organizer',
   contact:'Contact – OverDrive - Event Organizer', legal:'Legal Notice – OverDrive - Event Organizer', privacy:'Privacy – OverDrive - Event Organizer',
 };
+// SEO: one short, keyword-relevant description per page, swapped into the
+// <meta name="description"> tag on every client-side navigation (see
+// applyPageMeta below) so a page shared or re-crawled under its own URL
+// (schedule.html, standings-div1.html, ...) never shows the homepage's
+// description - each of those is a real, separately-indexable file (see the
+// PAGE_FILE_MAP comment above), so this matters for how they show up in
+// search results, not just for the tab title.
+const PAGE_DESCRIPTIONS = {
+  home: 'Standings, schedule, Open Qualifiers, and Continentals for every division of the OverDrive 2v2 Trackmania league.',
+  leagues: 'Regional standings and results for the OverDrive 2v2 Trackmania league - EMEA, Oceasia and NCSA.',
+  standings: 'Division 1 and Division 2 standings for the OverDrive 2v2 Trackmania league: ranks, records, and track differential.',
+  schedule: 'Full match schedule and results for the OverDrive 2v2 Trackmania league, across every division, Open Qualifier and region.',
+  news: 'Latest news and articles from the OverDrive 2v2 Trackmania league.',
+  articles: 'Latest news and articles from the OverDrive 2v2 Trackmania league.',
+  article: 'News and articles from the OverDrive 2v2 Trackmania league.',
+  vods: 'Watch VODs from OverDrive 2v2 Trackmania league matches.',
+  teams: 'Teams competing in the OverDrive 2v2 Trackmania league - rosters, divisions, and logos.',
+  overpoints: 'Overpoints standings for the OverDrive 2v2 Trackmania league.',
+  about: 'About OverDrive, the 2v2 Trackmania esports league.',
+  howtoplay: 'How to join OverDrive: format, divisions, Open Qualifiers, and Continentals explained.',
+  media: 'Official OverDrive media and brand kit - logos and assets.',
+  contact: 'Get in touch with the OverDrive 2v2 Trackmania league.',
+  legal: 'OverDrive legal notice.',
+  privacy: 'OverDrive privacy policy.',
+};
+// Keeps <title>, <meta name="description"> and <link rel="canonical"> in sync
+// with the page actually showing, on every client-side navigation (go()/
+// popstate) - not just at initial load, where the static tags in <head>
+// already cover the crawler that fetches that page's own file directly.
+function applyPageMeta(page, sub) {
+  document.title = PAGE_TITLES[page] || 'OverDrive - Event Organizer';
+  const desc = PAGE_DESCRIPTIONS[page] || PAGE_DESCRIPTIONS.home;
+  const descEl = document.querySelector('meta[name="description"]');
+  if (descEl) descEl.setAttribute('content', desc);
+  const file = PAGE_FILE_MAP[`${page}|${sub || ''}`] || PAGE_FILE_MAP[`${page}|`] || 'index.html';
+  const canonicalPath = file === 'index.html' ? '' : file;
+  let canonEl = document.querySelector('link[rel="canonical"]');
+  if (!canonEl) { canonEl = document.createElement('link'); canonEl.rel = 'canonical'; document.head.appendChild(canonEl); }
+  canonEl.href = BASE_PATH + canonicalPath;
+}
+// Google Analytics 4 doesn't see these in-page navigations on its own: gtag.js
+// only auto-fires one page_view when the script first loads, and this router
+// changes pages via pushState/renderInPlace without a real page load in
+// between (aside from the direct-file-load case, which gtag's own automatic
+// page_view already covers correctly, since every route is a real, separate
+// URL - see PAGE_FILE_MAP above). This fires the equivalent event manually for
+// every client-side navigation, so sponsor-facing traffic reports don't miss
+// them. No-ops harmlessly if GA hasn't loaded (blocked by an ad-blocker, or
+// the Measurement ID hasn't been configured yet in index.html).
+function trackPageView(page, sub) {
+  if (typeof gtag !== 'function') return;
+  const file = PAGE_FILE_MAP[`${page}|${sub || ''}`] || PAGE_FILE_MAP[`${page}|`] || 'index.html';
+  const path = BASE_PATH + (file === 'index.html' ? '' : file);
+  gtag('event', 'page_view', {
+    page_title: PAGE_TITLES[page] || 'OverDrive - Event Organizer',
+    page_location: location.origin + path + location.search,
+    page_path: path,
+  });
+}
 // Reads {page, sub} off the current URL's real filename (falling back to 'home'
 // for an unrecognised one) rather than parsing path segments. Article slugs travel
 // as ?slug=... since there's no real per-article file to read a path segment from;
@@ -3215,26 +3324,28 @@ function pageFromPath() {
 // go()'s own navigation to filter out here the way the old hash router needed to.
 // Every popstate is a genuine back/forward and should always be processed.
 function syncPath(page, sub) {
-  document.title = PAGE_TITLES[page] || 'OverDrive - Event Organizer';
+  applyPageMeta(page, sub);
   const file = PAGE_FILE_MAP[`${page}|${sub || ''}`] || PAGE_FILE_MAP[`${page}|`] || 'index.html';
   const search = (page === 'article' && sub) ? `?slug=${encodeURIComponent(sub)}` : '';
   const desired = BASE_PATH + file;
   if (location.pathname !== desired || location.search !== search) {
     history.pushState({ page, sub }, '', desired + search);
+    trackPageView(page, sub);
   }
 }
 window.addEventListener('popstate', () => {
   closeMobileNav();
-  const { page: p } = pageFromPath();
+  const { page: p, sub: s } = pageFromPath();
   if (p === S.page) return;
   S.page = p;
   renderInPlace();
   window.scrollTo({ top: 0 });
-  document.title = PAGE_TITLES[p] || 'OverDrive - Event Organizer';
+  applyPageMeta(p, s);
+  trackPageView(p, s);
 });
 
 function render() {
-  document.title = PAGE_TITLES[S.page] || 'OverDrive - Event Organizer';
+  applyPageMeta(S.page);
   const hasData = S.sched.length || S.d1.length || S.d2.length || Object.keys(S.teams).length;
   if (!hasData) {
     const warn = '<div style="background:rgba(255,106,0,.1);border:1px solid rgba(255,106,0,.3);padding:16px 20px;margin:0 0 20px;font-size:13px;color:var(--muted)"><strong style="color:var(--acc)">⚠ Data not loaded</strong> – Open console (F12) to see GViz errors.</div>';
