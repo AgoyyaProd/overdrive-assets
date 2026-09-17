@@ -1991,9 +1991,14 @@ function swissTable(regionKey) {
   const totalCols = 5 + maxRound;
   // Top half of the Swiss field advances to Playoffs, bottom half is eliminated -
   // rounded up, so an odd team count favours qualifying (e.g. 15 teams → top 8 go
-  // through). A full-width divider row marks that cutoff directly in the table.
+  // through). A full-width divider row marks that cutoff directly in the table, and
+  // each half also gets its own <tbody> so a green/red side bar can mark the whole
+  // group in one continuous strip rather than row by row.
   const qualifyCount = Math.ceil(teams.length / 2);
-  const rows = teams.map((t, i) => {
+  const hasCut = qualifyCount < teams.length;
+  // groupCls/isFirst/isLast drive the side bar: only the first and last row of a
+  // group get rounded corners, so consecutive rows read as one unbroken strip.
+  const rowHtml = (t, groupCls, isFirst, isLast) => {
     const teamObj = S.teams[t.key] || { team_name: dn(t.name), logo_url: S.defaultLogo };
     const logo = tlogo(teamObj, 28, 'swiss-team-logo');
     const roundCells = Array.from({ length: maxRound }, (_, i) => {
@@ -2004,25 +2009,33 @@ function swissTable(regionKey) {
       return `<td class="swiss-rd"><div class="swiss-rd-cell ${r.win ? 'win' : 'loss'}">${oppLogo}<div class="swiss-rd-score">${r.score}:${r.oppScore}</div></div></td>`;
     }).join('');
     const gdCls = t.gd > 0 ? 'gd-pos' : t.gd < 0 ? 'gd-neg' : '';
-    const row = `<tr>
-<td class="swiss-rank">${t.rank}.</td>
+    const rankCls = ['swiss-rank', `swiss-bar-${groupCls}`, isFirst ? 'swiss-bar-first' : '', isLast ? 'swiss-bar-last' : ''].filter(Boolean).join(' ');
+    return `<tr>
+<td class="${rankCls}">${t.rank}.</td>
 <td class="swiss-team"><div class="swiss-team-inner">${logo}<span>${t.name}</span></div></td>
 <td>${t.wins}-${t.losses}</td>
 <td>${t.gf}-${t.ga}</td>
 <td class="${gdCls}">${t.gd > 0 ? '+' : ''}${t.gd}</td>
 ${roundCells}
 </tr>`;
-    // The divider sits right after the last qualifying team, labelled on the side
-    // that's about to start (eliminated) so it reads correctly whichever row it's
-    // next to, rather than ambiguously between two teams.
-    const divider = (i === qualifyCount - 1 && i < teams.length - 1)
-      ? `<tr class="swiss-cut"><td colspan="${totalCols}"><span class="swiss-cut-q"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M12 4l8 14H4z"/></svg>Qualified for Playoffs</span><span class="swiss-cut-e">Eliminated from Continentals<svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M12 20L4 6h16z"/></svg></span></td></tr>`
-      : '';
-    return row + divider;
-  }).join('');
+  };
+  const qualifiedRows = teams.slice(0, qualifyCount)
+    .map((t, i) => rowHtml(t, 'q', i === 0, i === qualifyCount - 1)).join('');
+  const eliminatedTeams = teams.slice(qualifyCount);
+  const eliminatedRows = eliminatedTeams
+    .map((t, i) => rowHtml(t, 'e', i === 0, i === eliminatedTeams.length - 1)).join('');
+  // Labelled on the side that's about to start (eliminated) so it reads correctly
+  // whichever team's row it's adjacent to, rather than ambiguously between two.
+  const dividerRow = hasCut
+    ? `<tbody><tr class="swiss-cut"><td colspan="${totalCols}"><span class="swiss-cut-q"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M12 4l8 14H4z"/></svg>Qualified for Playoffs</span><span class="swiss-cut-e">Eliminated from Continentals<svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M12 20L4 6h16z"/></svg></span></td></tr></tbody>`
+    : '';
   return `<div class="st-wrap swiss-wrap"><table class="swiss-tbl"><thead><tr>
 <th>#</th><th>Team</th><th>Matches</th><th>Games</th><th>GD</th>${roundHeaders}
-</tr></thead><tbody>${rows}</tbody></table></div>${stWrapHint()}`;
+</tr></thead>
+<tbody>${qualifiedRows}</tbody>
+${dividerRow}
+${hasCut ? `<tbody>${eliminatedRows}</tbody>` : ''}
+</table></div>${stWrapHint()}`;
 }
 
 function playoffsBracketHtml(regionKey) {
