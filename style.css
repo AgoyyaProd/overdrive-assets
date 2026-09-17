@@ -945,8 +945,12 @@ footer{
 /* Round-result hover tip + click-through to the match modal - same attr(data-tip)
    tooltip mechanism as the Standings header tips (.th-tip), reused here since both
    want the same "small dark label with an arrow" look. */
-.swiss-rd-tip{cursor:pointer;position:relative;transition:filter .12s}
-.swiss-rd-tip:hover{filter:brightness(1.35)}
+/* z-index:1 (bumped further on hover) lifts the whole cell above the row
+   underneath it: tables paint row by row in DOM order, so without this the
+   next row down (being later in the document) painted over the tooltip that
+   pokes below the hovered cell, showing its own "2:0" text bleeding through. */
+.swiss-rd-tip{cursor:pointer;position:relative;transition:filter .12s;z-index:1}
+.swiss-rd-tip:hover{filter:brightness(1.35);z-index:50}
 /* Solid grey (not the site's usual near-black) so the tooltip reads clearly
    against the win/loss cell's own green/red tint instead of blending into it. */
 .swiss-rd-tip:hover::after{content:attr(data-tip);position:absolute;top:calc(100% + 9px);left:50%;transform:translateX(-50%);background:#3a3a3a;border:1px solid var(--brd2);color:#fff;padding:6px 10px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:.02em;text-transform:uppercase;white-space:nowrap;z-index:30;box-shadow:0 4px 14px rgba(0,0,0,.5);pointer-events:none}
