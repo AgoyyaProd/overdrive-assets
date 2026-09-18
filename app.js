@@ -669,29 +669,26 @@ async function loadWebsiteStandings() {
       // its rows carry the region as a free-text phrase (e.g. "Continental
       // EMEA Playoffs" - note the live sheet also has a typo, "Amercias" for
       // "Americas") rather than a bare code, matched loosely in
-      // continentalsStandingsSection(). Its overdrive_points column is
-      // mislabeled "team_name_stored" in the live sheet (leftover/typo), so
-      // that label is accepted as an alias when "overdrive_points" itself
-      // isn't present in this block's header row.
+      // continentalsStandingsSection(). Like the Div1/2 blocks, its header row
+      // leaves the "rank" cell blank even though the rank data itself is
+      // there, and its overdrive_points column is mislabeled "team_name_stored"
+      // (confirmed directly against a live GViz fetch: 2026-09-18) - so, same
+      // fix as Div1/2, this is read positionally (event, rank, team_id,
+      // team_name, overdrive_points, in that fixed order) rather than by label.
       if (String(c0 ?? '').trim().toLowerCase() === 'event') {
-        const map = {};
-        for (let ci = 0; ci < nCols; ci++) {
-          const label = String(cv(r, ci) ?? '').trim().toLowerCase();
-          if (label) map[label] = ci;
-        }
-        if (map['team_id'] == null) continue;
-        const opCol = map['overdrive_points'] != null ? map['overdrive_points'] : (map['team_name_stored'] != null ? map['team_name_stored'] : null);
+        const off = { event: 0, rank: 1, team_id: 2, team_name: 3, overdrive_points: 4 };
+        if (String(cv(r, off.team_id) ?? '').trim().toLowerCase() !== 'team_id') continue;
         let j = i + 1;
         const built = [];
         while (j < rows.length) {
           if (isStandingsBlockBoundary(rows[j])) break;
-          const teamId = cv(rows[j], map['team_id']);
+          const teamId = cv(rows[j], off.team_id);
           if (teamId == null || teamId === '') break;
           built.push(en({
-            rank: cv(rows[j], map['rank']),
+            rank: cv(rows[j], off.rank),
             team_id: String(teamId).toLowerCase(),
-            overdrive_points: opCol != null ? cv(rows[j], opCol) : null,
-            event: map['event'] != null ? cv(rows[j], map['event']) : null,
+            overdrive_points: cv(rows[j], off.overdrive_points),
+            event: cv(rows[j], off.event),
             champion: false,
           }));
           j++;
@@ -709,19 +706,43 @@ async function loadWebsiteStandings() {
         if (String(cv(r, ci) ?? '').trim().toLowerCase() === 'division') starts.push(ci);
       }
       starts.forEach((startCol, si) => {
-        const endCol = si + 1 < starts.length ? starts[si + 1] : nCols;
-        const map = {};
-        for (let ci = startCol; ci < endCol; ci++) {
-          const label = String(cv(r, ci) ?? '').trim().toLowerCase();
-          if (label) map[label] = ci;
-        }
-        if (map['team_id'] == null) return;
+        // The live sheet only ever fills in text for the "division"/"team_id"/
+        // "team_name"/"matches" header cells in this row - rank, wins, losses,
+        // track_wins, track_losses, track_delta, points, playoffs_rank and
+        // overdrive_points are left blank in the header despite the data
+        // itself being present, at a fixed position, one column at a time
+        // right after "division" (confirmed directly against a live GViz
+        // fetch: 2026-09-18). So this reads every column positionally from
+        // startCol rather than trusting header labels, which can't find a
+        // blank-labeled column at all. The one column count that varies is
+        // whether playoffs_rank exists - Div 2's block has never had one, so
+        // overdrive_points shifts left by one there. This can't be detected
+        // from block width (nCols is padded past the sheet's real last
+        // column, which inflates the width of whichever block sits last on
+        // the row) so it's read straight off the first data row instead: a
+        // value at the would-be playoffs_rank position (startCol+11) only
+        // means anything when a value also exists one column further out
+        // (startCol+12, where overdrive_points would then sit) - otherwise
+        // startCol+11 IS overdrive_points and there's no playoffs_rank here.
+        const firstDataRow = rows[i + 1];
+        const hasPlayoffsRank = firstDataRow != null
+          && cv(firstDataRow, startCol + 11) != null && cv(firstDataRow, startCol + 11) !== ''
+          && cv(firstDataRow, startCol + 12) != null && cv(firstDataRow, startCol + 12) !== '';
+        const off = {
+          rank: startCol + 1, team_id: startCol + 2, team_name: startCol + 3, matches: startCol + 4,
+          wins: startCol + 5, losses: startCol + 6, tracks_w: startCol + 7, tracks_l: startCol + 8,
+          track_diff: startCol + 9, points: startCol + 10,
+          playoffs_rank: hasPlayoffsRank ? startCol + 11 : null,
+          overdrive_points: startCol + (hasPlayoffsRank ? 12 : 11),
+        };
+        // team_id/team_name/matches labels are the ones the sheet does fill
+        // in, so cross-check the computed offsets against them rather than
+        // trusting position blindly - if they've drifted, skip this block
+        // instead of silently building on wrong columns.
+        const labelAt = (ci) => String(cv(r, ci) ?? '').trim().toLowerCase();
+        if (labelAt(off.team_id) !== 'team_id' || labelAt(off.team_name) !== 'team_name') return;
         let j = i + 1;
         const built = [];
-        // Column label lookup that tries every known spelling variant (the sheet's
-        // actual header text for these has drifted at least once already - e.g.
-        // "track_wins" vs "tracks_wins" - so this doesn't bet on one spelling).
-        const col = (...names) => { for (const n of names) if (map[n] != null) return map[n]; return null; };
         let divCellRaw = '';
         while (j < rows.length) {
           // A block's data rows run until the next blank team_id OR the next
@@ -731,53 +752,39 @@ async function loadWebsiteStandings() {
           // exact column position too, which would otherwise be swallowed in
           // as bogus extra team rows.
           if (isStandingsBlockBoundary(rows[j])) break;
-          const teamId = cv(rows[j], map['team_id']);
+          const teamId = cv(rows[j], off.team_id);
           if (teamId == null || teamId === '') break;
-          if (!divCellRaw) divCellRaw = String(cv(rows[j], map['division']) ?? '').trim();
+          if (!divCellRaw) divCellRaw = String(cv(rows[j], startCol) ?? '').trim();
           built.push(en({
-            rank: cv(rows[j], map['rank']),
+            rank: cv(rows[j], off.rank),
             team_id: String(teamId).toLowerCase(),
-            matches_p: cv(rows[j], col('matches','matches_played')),
-            matches_w: cv(rows[j], col('wins','wons','matches_w')),
-            matches_l: cv(rows[j], col('losses','matches_l')),
-            tracks_w: cv(rows[j], col('tracks_wins','track_wins','tracks_w')),
-            tracks_l: cv(rows[j], col('tracks_losses','track_losses','tracks_l')),
-            track_diff: cv(rows[j], col('tracks_delta','track_delta','tracks_diff')),
-            points: cv(rows[j], map['points']),
+            matches_p: cv(rows[j], off.matches),
+            matches_w: cv(rows[j], off.wins),
+            matches_l: cv(rows[j], off.losses),
+            tracks_w: cv(rows[j], off.tracks_w),
+            tracks_l: cv(rows[j], off.tracks_l),
+            track_diff: cv(rows[j], off.track_diff),
+            points: cv(rows[j], off.points),
             // Div 2's block has no playoffs_rank column at all (not just blank
             // data) in the current sheet, so this is left null rather than 0
-            // when the label was never found in this block's header slice.
-            playoffs_rank: map['playoffs_rank'] != null ? cv(rows[j], map['playoffs_rank']) : null,
-            overdrive_points: cv(rows[j], map['overdrive_points']),
-            // Only present on the Continentals block: which region this row belongs
-            // to (e.g. "EMEA", "Oceasia", "NCSA"), straight from its "event" column -
-            // this is how continentalsStandingsSection() scopes the final standings
-            // to the right Regionals page, no cross-referencing needed.
-            event: map['event'] != null ? cv(rows[j], map['event']) : null,
+            // when this block's width says the column doesn't exist.
+            playoffs_rank: off.playoffs_rank != null ? cv(rows[j], off.playoffs_rank) : null,
+            overdrive_points: cv(rows[j], off.overdrive_points),
+            event: null,
             // The old sheet had an explicit "Champ: X" column read straight into
             // this flag; the new one doesn't, so per the site's own convention,
             // playoffs_rank 1 stands in for it everywhere .champion is read
             // (this table's own gold-row styling, and the career title-count /
             // "Overdrive Record" aggregation on a team's profile modal).
-            champion: String((map['playoffs_rank'] != null ? cv(rows[j], map['playoffs_rank']) : '') ?? '').trim() === '1',
+            champion: String((off.playoffs_rank != null ? cv(rows[j], off.playoffs_rank) : '') ?? '').trim() === '1',
           }));
           j++;
         }
         built.sort((a, b) => +a.rank - +b.rank);
         if (!bySplit[currentSplitId]) bySplit[currentSplitId] = { d1: [], d2: [], continentals: [] };
-        // A "Continentals" block (added for Overdrive-Points management) shares
-        // this same division/rank/team_id/... header shape but isn't Division 1
-        // or 2 - divCellRaw wouldn't contain a bare "1"/"2" digit for it, but
-        // checking for "continental" explicitly (rather than just falling back
-        // to d1 whenever the digit test fails) avoids silently overwriting
-        // Division 1's real standings with this block's rows.
         const dc = divCellRaw.toLowerCase();
-        if (dc.includes('continental')) {
-          bySplit[currentSplitId].continentals = built;
-        } else {
-          const divNum = /2/.test(divCellRaw) ? '2' : '1';
-          if (divNum === '2') bySplit[currentSplitId].d2 = built; else bySplit[currentSplitId].d1 = built;
-        }
+        const divNum = /2/.test(dc) ? '2' : '1';
+        if (divNum === '2') bySplit[currentSplitId].d2 = built; else bySplit[currentSplitId].d1 = built;
       });
     }
   }
