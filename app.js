@@ -1413,7 +1413,10 @@ function findOqContinentalsResult(lineage, splitId) {
     }
 
     const swiss = swissData(region.key, splitId);
-    const teamRow = swiss.teams.find(t => isOurTeam(t.name));
+    // t.key is the raw team_id (ctKey'd) swissData() grouped this row under -
+    // t.name is now the display name (see swissData()'s getTeam()), which
+    // wouldn't match a lineage of ids any more.
+    const teamRow = swiss.teams.find(t => isOurTeam(t.key));
     if (teamRow) {
       const playoffs = playoffsBracket(region.key, splitId);
       // Up&Downs qualification, not a "champion" title: EMEA sends its top 2
@@ -1837,13 +1840,21 @@ function swissData(regionKey, splitId) {
   const teams = {};
   const roundCounter = {};
   let maxRound = 0;
-  const getTeam = raw => {
+  // teamObj is the already-resolved team (m.A/m.B, from enrichScheduleRows()'s
+  // resolveHistoricalTeam()) - carrying the name/logo this row was actually
+  // recorded under, not whatever S.teams currently says. getTeam() previously
+  // stored the bare raw id as `name`, which is why Swiss stage rows showed
+  // "TEAM_0021" instead of an actual team name.
+  const getTeam = (raw, teamObj) => {
     const key = ctKey(raw);
-    if (!teams[key]) { teams[key] = { key, name: raw, wins: 0, losses: 0, gf: 0, ga: 0, rounds: {} }; roundCounter[key] = 0; }
+    if (!teams[key]) {
+      teams[key] = { key, name: (teamObj && teamObj.team_name) || dn(raw) || raw, teamObj: teamObj || null, wins: 0, losses: 0, gf: 0, ga: 0, rounds: {} };
+      roundCounter[key] = 0;
+    }
     return teams[key];
   };
   matches.forEach(m => {
-    const a = getTeam(m.team_a_id), b = getTeam(m.team_b_id);
+    const a = getTeam(m.team_a_id, m.A), b = getTeam(m.team_b_id, m.B);
     const r = parseMatchResult(m.score_a, m.score_b);
     if (!r.hasResult) return; // unplayed row - skip, doesn't consume a round slot
     const round = Math.max(roundCounter[a.key], roundCounter[b.key]) + 1;
@@ -1856,8 +1867,8 @@ function swissData(regionKey, splitId) {
     const bLabel = r.forfeit ? (r.aWon ? 'FF' : 'W') : r.sb;
     // matchKey is carried along so a round cell can open the same match-detail
     // modal the Schedule page uses, rather than a Swiss-specific one.
-    a.rounds[round] = { opponent: b.name, opponentTeam: S.teams[b.key] || S.teams[b.name] || null, score: aLabel, oppScore: bLabel, win: r.aWon, matchKey: matchKey(m) };
-    b.rounds[round] = { opponent: a.name, opponentTeam: S.teams[a.key] || S.teams[a.name] || null, score: bLabel, oppScore: aLabel, win: !r.aWon, matchKey: matchKey(m) };
+    a.rounds[round] = { opponent: b.name, opponentTeam: b.teamObj || null, score: aLabel, oppScore: bLabel, win: r.aWon, matchKey: matchKey(m) };
+    b.rounds[round] = { opponent: a.name, opponentTeam: a.teamObj || null, score: bLabel, oppScore: aLabel, win: !r.aWon, matchKey: matchKey(m) };
   });
   const list = Object.values(teams).map(t => ({ ...t, gd: t.gf - t.ga }));
   // Wins first; then fewer losses (an undefeated 3-0 record should always outrank
@@ -1898,8 +1909,11 @@ function playoffsBracket(regionKey, splitId) {
     else if (bracket === 'LB') { round = Math.max(lbCount[aKey], lbCount[bKey]) + 1; lbCount[aKey] = round; lbCount[bKey] = round; }
     const r = parseMatchResult(m.score_a, m.score_b);
     if (r.hasResult) { if (r.aWon) lossCount[bKey]++; else lossCount[aKey]++; }
-    const teamA = S.teams[aKey] || { team_name: dn(m.team_a_id), logo_url: S.defaultLogo };
-    const teamB = S.teams[bKey] || { team_name: dn(m.team_b_id), logo_url: S.defaultLogo };
+    // m.A/m.B are already resolved (by enrichScheduleRows()) against the team
+    // name this row was actually recorded under, same as swissData() - a fresh
+    // S.teams lookup by id here would show the current name instead.
+    const teamA = m.A || { team_name: dn(m.team_a_id), logo_url: S.defaultLogo };
+    const teamB = m.B || { team_name: dn(m.team_b_id), logo_url: S.defaultLogo };
     const scoreALabel = r.forfeit ? (r.aWon ? 'W' : 'FF') : m.score_a;
     const scoreBLabel = r.forfeit ? (r.aWon ? 'FF' : 'W') : m.score_b;
     return { ...m, bracket, round, hasScore: r.hasResult, aWon: r.aWon, teamA, teamB, scoreALabel, scoreBLabel };
@@ -2343,7 +2357,7 @@ function swissTable(regionKey) {
   // the right edge via the last round cell instead, so the two groups read as
   // bracketing the table from opposite sides rather than stacking on one edge.
   const rowHtml = (t, groupCls, isFirst, isLast) => {
-    const teamObj = S.teams[t.key] || { team_name: dn(t.name), logo_url: S.defaultLogo };
+    const teamObj = t.teamObj || { team_name: dn(t.name), logo_url: S.defaultLogo };
     const logo = tlogo(teamObj, 28, 'swiss-team-logo');
     const lastBarCls = groupCls === 'e'
       ? ['swiss-bar-e-anchor', isFirst ? 'swiss-bar-e-first' : '', isLast ? 'swiss-bar-e-last' : ''].filter(Boolean).join(' ')
@@ -2353,7 +2367,7 @@ function swissTable(regionKey) {
       const cellCls = ['swiss-rd', isLastCol ? lastBarCls : ''].filter(Boolean).join(' ');
       const r = t.rounds[i + 1];
       if (!r) return `<td class="${cellCls}"></td>`;
-      const oppTeam = S.teams[ctKey(r.opponent)] || { team_name: dn(r.opponent), logo_url: S.defaultLogo };
+      const oppTeam = r.opponentTeam || { team_name: dn(r.opponent), logo_url: S.defaultLogo };
       const oppLogo = tlogo(oppTeam, 20, 'swiss-rd-logo');
       // Hover tip reuses the same attr(data-tip) tooltip mechanism as the Standings
       // column headers (.th-tip); the click opens the same match-detail modal the
