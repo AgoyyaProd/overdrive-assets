@@ -167,9 +167,12 @@ async function lTeams() {
       const teamId = r.entity_id || r.team_id;
       if (!teamId) return;
       // Drive view links (/file/d/.../view) are NOT image URLs – use our thumbnail LOGOS instead
-      // Priority: 1) logo_url from sheet if it's a valid HTTP URL
-      //           2) LOGOS constant (Drive/embedded fallback)
-      const rawLogo = String(r.logo_url || '');
+      // Priority: 1) logo_overdrive - the site's own curated/hosted logo asset
+      //              (raw.githubusercontent.com SVGs), always preferred when set
+      //           2) logo_url - a generic third-party logo (Liquipedia, escharts,
+      //              a Drive link, ...) pulled in for teams without one yet
+      //           3) LOGOS constant (Drive/embedded fallback)
+      const rawLogo = String(r.logo_overdrive || r.logo_url || '');
       const isFullUrl = rawLogo.startsWith('http');
       const logo = (isFullUrl ? rawLogo : '') || LOGOS[teamId] || '';
       S.teams[teamId] = {
@@ -3879,10 +3882,20 @@ async function init() {
   }, 8000);
 
   try {
-    await lActiveSplitFromMatches();
+    // lActiveSplitFromMatches (WEBSITE_MATCHES), lTeams (data_teams) and
+    // lTeamHistory (Team_History) each fetch a different tab and don't
+    // depend on one another, so they run together rather than as three
+    // separate round trips. lSplits() has to come strictly after, though -
+    // it parses WEBSITE_STANDINGS via loadWebsiteStandings(), which bakes
+    // each row's team object in right there (via en()) and caches the
+    // result. Firing it before S.teams (lTeams) is populated bakes in the
+    // team_id-as-placeholder fallback for every row - and since that parse
+    // is cached until the next poll cycle (up to 10 minutes on a non-match
+    // day - see S.cfg.pd in refresh()/poll()), team names on Standings would
+    // silently show as raw team_ids for up to that long after every fresh
+    // page load. This was the whole "team name lookup is slow" symptom.
+    await Promise.all([lActiveSplitFromMatches(), lTeams(), lTeamHistory()]);
     await lSplits();
-    await lTeams();
-    await lTeamHistory();
     await Promise.all([lSched(S.act), lStand(S.act), lRes(S.act), lArt(), lVod(), lRank(), lOver(), loadHomeSplitData(), loadScheduleAllSplits()]);
     // Now that S.art is loaded, resolve a pending /article/<slug> route from the
     // initial URL that couldn't be matched before the articles existed.
