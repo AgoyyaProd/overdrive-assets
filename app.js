@@ -1902,6 +1902,12 @@ function schedFilteredMatches() {
   let ms = S.schedAllRows;
   if (S.schedSplit !== 'all') ms = ms.filter(m => m.split === S.schedSplit);
   ms = ms.filter(m => schedCatMatches(m, S.schedMode));
+  // Open Qualifier forfeits (W/L, W/FF) are dropped from the Schedule entirely -
+  // organizer-requested: 2026-09-18, Open Qualifier ONLY, never Continentals or
+  // any other event. schedCatMatches(m,'oq') (not S.schedMode) decides this, so
+  // the rule holds in every tab a forfeited OQ match could appear in (its own
+  // "Open Qualifier" tab and "All"), not just while the OQ filter is active.
+  ms = ms.filter(m => !schedCatMatches(m, 'oq') || !parseMatchResult(m.score_a, m.score_b).forfeit);
   if (S.schedMode === 'oq' && S.schedRegion) {
     const region = OQ_REGIONS.find(r => r.key === S.schedRegion);
     if (region) {
