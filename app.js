@@ -277,11 +277,22 @@ function teamLineage(teamId) {
 // once should keep applying forward until the next change), so ongoing splits
 // don't need a repeated identical row every season. Pass a raw id string or an
 // already-looked-up team object; unregistered names pass through unchanged.
+// When an OBJECT is passed, it's trusted as the base as-is rather than
+// re-fetched from S.teams fresh - loadWebsiteStandings()'s en() already
+// resolves each row's team once, including overriding team_name with the
+// name that split's own row actually recorded when it differs from the
+// team's current one (a rebrand shouldn't rewrite a past split's standings
+// to show a name the team didn't have yet). Re-deriving from S.teams[key]
+// here for every object caller (as this used to) always wins that override
+// right back to the current name, since S.teams[key] is basically always
+// set - which is why a renamed team's OLD splits kept showing its new name
+// even after that fix went in.
 function teamFor(teamOrId, splitId) {
   if (!teamOrId) return teamOrId;
-  const key = typeof teamOrId === 'string' ? teamOrId : teamOrId.team_id;
+  const isObj = typeof teamOrId === 'object';
+  const key = isObj ? teamOrId.team_id : teamOrId;
   if (!key) return teamOrId;
-  const base = S.teams[key] || S.teams[(key || '').toLowerCase()] || (typeof teamOrId === 'object' ? teamOrId : null);
+  const base = isObj ? teamOrId : (S.teams[key] || S.teams[(key || '').toLowerCase()] || null);
   const bySplit = S.teamHistory?.[key];
   if (!bySplit || !splitId) return base || teamOrId;
   // Walk splits at or before the requested one, most recent first, so a change
