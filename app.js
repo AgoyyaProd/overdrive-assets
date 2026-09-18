@@ -626,6 +626,19 @@ async function lSched(sp) {
 // header (the literal "selectors/season/split/event" line), which isn't useful
 // here - so this walks t.rows directly, finding each metadata row and each
 // header row by their own cell content instead of relying on t.cols.
+// True for a row that starts a new block (a "season | split | event" metadata
+// row, or a "division"/"event" header row) - i.e. NOT a data row belonging to
+// whatever block is currently being read. Without this check, a block's data
+// loop (which only looks at whether its own team_id column is blank) happily
+// reads straight through into the next block's header and data rows too,
+// since their cells can be non-blank at that same column position - this is
+// what was producing the garbage placeholder rows seen live on Standings.
+function isStandingsBlockBoundary(row) {
+  const c0 = cv(row, 0), c1 = cv(row, 1);
+  if (c0 != null && c0 !== '' && !isNaN(+c0) && +c0 > 1900 && c1 != null && c1 !== '' && !isNaN(+c1)) return true;
+  const c0s = String(c0 ?? '').trim().toLowerCase();
+  return c0s === 'division' || c0s === 'event';
+}
 let _standingsCache = null; // { bySplit: { '1': {d1,d2}, ... }, splits: [{split_id,label}] }
 async function loadWebsiteStandings() {
   if (_standingsCache) return _standingsCache;
@@ -648,6 +661,44 @@ async function loadWebsiteStandings() {
         if (currentSplitId && !splitsSeen.some(s => s.split_id === currentSplitId)) {
           splitsSeen.push({ split_id: currentSplitId, label: labelText ? (labelText[0].toUpperCase() + labelText.slice(1) + ' ' + c0) : ('Split ' + currentSplitId) });
         }
+        continue;
+      }
+      // Continentals block: a different header shape entirely - its first cell
+      // is "event" (not "division"), it has no metadata row of its own (it
+      // inherits currentSplitId from whichever Div1/2 block preceded it), and
+      // its rows carry the region as a free-text phrase (e.g. "Continental
+      // EMEA Playoffs" - note the live sheet also has a typo, "Amercias" for
+      // "Americas") rather than a bare code, matched loosely in
+      // continentalsStandingsSection(). Its overdrive_points column is
+      // mislabeled "team_name_stored" in the live sheet (leftover/typo), so
+      // that label is accepted as an alias when "overdrive_points" itself
+      // isn't present in this block's header row.
+      if (String(c0 ?? '').trim().toLowerCase() === 'event') {
+        const map = {};
+        for (let ci = 0; ci < nCols; ci++) {
+          const label = String(cv(r, ci) ?? '').trim().toLowerCase();
+          if (label) map[label] = ci;
+        }
+        if (map['team_id'] == null) continue;
+        const opCol = map['overdrive_points'] != null ? map['overdrive_points'] : (map['team_name_stored'] != null ? map['team_name_stored'] : null);
+        let j = i + 1;
+        const built = [];
+        while (j < rows.length) {
+          if (isStandingsBlockBoundary(rows[j])) break;
+          const teamId = cv(rows[j], map['team_id']);
+          if (teamId == null || teamId === '') break;
+          built.push(en({
+            rank: cv(rows[j], map['rank']),
+            team_id: String(teamId).toLowerCase(),
+            overdrive_points: opCol != null ? cv(rows[j], opCol) : null,
+            event: map['event'] != null ? cv(rows[j], map['event']) : null,
+            champion: false,
+          }));
+          j++;
+        }
+        built.sort((a, b) => +a.rank - +b.rank);
+        if (!bySplit[currentSplitId]) bySplit[currentSplitId] = { d1: [], d2: [], continentals: [] };
+        bySplit[currentSplitId].continentals = bySplit[currentSplitId].continentals.concat(built);
         continue;
       }
       if (String(c0 ?? '').trim().toLowerCase() !== 'division') continue;
@@ -673,6 +724,13 @@ async function loadWebsiteStandings() {
         const col = (...names) => { for (const n of names) if (map[n] != null) return map[n]; return null; };
         let divCellRaw = '';
         while (j < rows.length) {
+          // A block's data rows run until the next blank team_id OR the next
+          // header/metadata row - checking only team_id isn't enough, because
+          // the following block's header row (or the Continentals "event"
+          // block right after it) can have non-blank text sitting in this
+          // exact column position too, which would otherwise be swallowed in
+          // as bogus extra team rows.
+          if (isStandingsBlockBoundary(rows[j])) break;
           const teamId = cv(rows[j], map['team_id']);
           if (teamId == null || teamId === '') break;
           if (!divCellRaw) divCellRaw = String(cv(rows[j], map['division']) ?? '').trim();
@@ -2265,10 +2323,20 @@ function continentalsStandingsSection(regionKey, splitId) {
   const rows = S.continentalsStandings || [];
   if (!rows.length) return '';
   const region = OQ_REGIONS.find(r => r.key === regionKey);
-  const wantedNames = new Set([region?.key, region?.label, region?.prefix].filter(Boolean).map(s => s.trim().toLowerCase()));
+  // The live sheet's event values are full free-text phrases (e.g. "Continental
+  // EMEA Playoffs"), not bare region codes, so this matches by substring rather
+  // than equality. It also also has its own typo - "Continental Amercias
+  // Playoffs" for Americas - which the region's own key/label/prefix
+  // ("AMERICAS"/"AMERICAS"/"NCSA") wouldn't catch, hence the explicit "amer"
+  // fallback (a prefix shared by both the correct and misspelled forms).
+  const wantedNames = [region?.key, region?.label, region?.prefix].filter(Boolean).map(s => s.trim().toLowerCase());
+  if (regionKey === 'AMERICAS') wantedNames.push('amer');
   const withEvent = rows.filter(r => r.event != null && String(r.event).trim() !== '');
   const noEvent = rows.filter(r => r.event == null || String(r.event).trim() === '');
-  let scoped = withEvent.filter(r => wantedNames.has(String(r.event).trim().toLowerCase()));
+  let scoped = withEvent.filter(r => {
+    const ev = String(r.event).trim().toLowerCase();
+    return wantedNames.some(w => ev.includes(w));
+  });
   if (noEvent.length) {
     const swiss = swissData(regionKey, sp);
     const regionTeamKeys = new Set(swiss.teams.map(t => t.key));
