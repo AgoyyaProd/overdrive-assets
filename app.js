@@ -1406,7 +1406,8 @@ function findOqContinentalsResult(lineage, splitId) {
         if (!isA && !isOurTeam(m.team_b_id)) return;
         if (isA ? r.aWon : !r.aWon) w++; else l++;
       });
-      const qualified = g.winnerId && isOurTeam(g.winnerId);
+      const qualified = (g.winnerId && isOurTeam(g.winnerId)) ||
+        (g.bothQualify && g.loserId && isOurTeam(g.loserId));
       const outcome = qualified ? 'Qualified to Continentals' : ((w + l) ? 'Eliminated' : 'In progress');
       return { altKind: 'oq', altLabel: `${region.label} Open Qualifier ${g.roundNum}`, altRecord: `${w}-${l}`, altOutcome: outcome };
     }
@@ -1670,12 +1671,20 @@ function mc(m) {
 </div>
 </div>`;
 }
-// Open Qualifier regions: the sheet uses "NCSA" as the match_id prefix, but this is
-// labeled "AMERICAS" in the UI.
+// Open Qualifier regions. The sheet uses two different naming conventions for
+// the same region depending on which tab it's in: WEBSITE_MATCHES' Open
+// Qualifier event text spells the region out ("Open Qualifier 1 Americas"),
+// while Continentals match_id (and match_id here, "NCSA Swiss"/"NCSA
+// Playoffs") uses the old "NCSA" code - confirmed live: 2026-09-18. `prefix`
+// stays the Continentals-facing code; `oqPrefix` (derived straight from the
+// region text as classifyEvent's Open Qualifier branch builds it - the
+// region's own label, uppercased) is what Open Qualifier matching (oqGroups(),
+// schedOQRounds(), the Schedule page's OQ filter) must use instead, or
+// AMERICAS' Open Qualifier bracket never matches anything.
 const OQ_REGIONS = [
-  { key:'EMEA', label:'EMEA', prefix:'EMEA' },
-  { key:'APAC', label:'Oceasia', prefix:'OCEASIA' }, // sheet renamed this region "Oceasia" (was "APAC"); internal key kept as-is
-  { key:'AMERICAS', label:'AMERICAS', prefix:'NCSA' },
+  { key:'EMEA', label:'EMEA', prefix:'EMEA', oqPrefix:'EMEA' },
+  { key:'APAC', label:'Oceasia', prefix:'OCEASIA', oqPrefix:'OCEASIA' }, // sheet renamed this region "Oceasia" (was "APAC"); internal key kept as-is
+  { key:'AMERICAS', label:'AMERICAS', prefix:'NCSA', oqPrefix:'AMERICAS' },
 ];
 // Groups a region's Open Qualifier rows by match_id (e.g. all "APAC 1" rows are one
 // bracket's games, not one match each - unlike Div 1/2 where match_id is per-match).
@@ -1690,7 +1699,7 @@ function oqGroups(regionKey, splitId) {
   const rows = (S.schedAllRows || []).filter(m =>
     m.split === sp &&
     schedCatMatches(m, 'oq') &&
-    String(m.match_id || '').trim().toUpperCase().startsWith(region.prefix.toUpperCase() + ' ')
+    String(m.match_id || '').trim().toUpperCase().startsWith(region.oqPrefix.toUpperCase() + ' ')
   );
   const byId = {};
   rows.forEach(m => {
@@ -1709,19 +1718,23 @@ function oqGroups(regionKey, splitId) {
       const played = matches.filter(hasScore);
       const last = played.length ? played[played.length - 1] : null;
       const lastResult = last ? parseMatchResult(last.score_a, last.score_b) : null;
+      // Each match row already carries its own resolved team object (m.A/m.B,
+      // built by enrichScheduleRows()'s resolveHistoricalTeam()) - preferred over
+      // a fresh S.teams lookup by id so a later rebrand doesn't rewrite who
+      // qualified out of an old bracket, and so unregistered qualifier-only
+      // entrants (no team_id in the Teams roster at all) still resolve to a
+      // usable name/logo, same as everywhere else historical team identity
+      // matters on this site (Standings, Barrage/Up&Down).
       const winnerId = lastResult ? (lastResult.aWon ? last.team_a_id : last.team_b_id) : null;
-      // Open Qualifier entrants are often not in the Teams roster at all (they're
-      // qualifier-only participants, not registered league teams), so team_a_id/
-      // team_b_id here can be a plain display name ("Loading Pink") rather than a
-      // normalized slug. Falling back to null when the id isn't a known team_id
-      // was wrongly treated as "no winner yet" even when the match had a real,
-      // valid score - this builds a minimal stand-in so the card still renders
-      // (with a letter-placeholder logo) instead of reporting "in progress".
-      const winnerTeam = winnerId
-        ? (S.teams[winnerId] || S.teams[(winnerId || '').toLowerCase()] || { team_id: winnerId, team_name: dn(winnerId), logo_url: S.defaultLogo })
-        : null;
+      const winnerTeam = lastResult ? (lastResult.aWon ? last.A : last.B) : null;
+      const loserId = lastResult ? (lastResult.aWon ? last.team_b_id : last.team_a_id) : null;
+      const loserTeam = lastResult ? (lastResult.aWon ? last.B : last.A) : null;
       const roundNum = +((id.match(/(\d+)\s*$/) || [])[1] || 0);
-      return { id, region: region.key, regionLabel: region.label, roundNum, matches, winnerId, winnerTeam };
+      // EMEA's Open Qualifier sends BOTH the winner and the loser of each
+      // bracket's last match to Continentals; every other region only sends the
+      // winner (organizer-confirmed: 2026-09-18).
+      const bothQualify = region.key === 'EMEA';
+      return { id, region: region.key, regionLabel: region.label, roundNum, matches, winnerId, winnerTeam, loserId, loserTeam, bothQualify };
     });
 }
 function oqCard(group) {
@@ -1731,13 +1744,16 @@ function oqCard(group) {
   <div class="oq-status oq-status-pending">In progress</div>
 </div>`;
   }
-  const logo = `<div class="oq-logo-box">${tlogo(group.winnerTeam, 90)}</div>`;
-  return `<div class="oq-card" onclick="openOQModal('${group.region}','${group.id.replace(/'/g, "\\'")}')">
+  const qualifiers = group.bothQualify && group.loserTeam ? [group.winnerTeam, group.loserTeam] : [group.winnerTeam];
+  return qualifiers.map(team => {
+    const logo = `<div class="oq-logo-box">${tlogo(team, 90)}</div>`;
+    return `<div class="oq-card" onclick="openOQModal('${group.region}','${group.id.replace(/'/g, "\\'")}')">
   ${logo}
-  <div class="oq-name">${group.winnerTeam.team_name}</div>
+  <div class="oq-name">${team.team_name}</div>
   <div class="oq-round">${group.regionLabel} Open Qualifier ${group.roundNum}</div>
   <div class="oq-status">Qualified to Continentals</div>
 </div>`;
+  }).join('');
 }
 
 // ━━━ CONTINENTALS: SWISS STAGE + PLAYOFFS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1784,8 +1800,17 @@ function matchKey(m) {
 function parseMatchResult(scoreARaw, scoreBRaw) {
   const aRaw = String(scoreARaw ?? '').trim().toUpperCase();
   const bRaw = String(scoreBRaw ?? '').trim().toUpperCase();
-  if ((aRaw === 'W' && bRaw === 'FF') || (bRaw === 'W' && aRaw === 'FF')) {
-    return { hasResult: true, aWon: aRaw === 'W', sa: 0, sb: 0, forfeit: true };
+  // Forfeit-style result: the sheet has used both "W"/"FF" and, more recently,
+  // "W"/"L" for a forfeited match (confirmed live: 2026-09-18) - so any
+  // non-numeric code on either side is treated as a forfeit, not just "FF"
+  // specifically. Whichever side is literally "W" is the winner; a match coded
+  // with no "W" at all (e.g. "FF"/"FF", "L"/"L") is a double-forfeit with no
+  // winner, so it's reported as no result rather than guessing one.
+  const isCode = v => v === 'W' || v === 'L' || v === 'FF' || v === 'WO';
+  if (isCode(aRaw) || isCode(bRaw)) {
+    if (aRaw === 'W' && bRaw !== 'W') return { hasResult: true, aWon: true, sa: 0, sb: 0, forfeit: true };
+    if (bRaw === 'W' && aRaw !== 'W') return { hasResult: true, aWon: false, sa: 0, sb: 0, forfeit: true };
+    return { hasResult: false, aWon: null, sa: 0, sb: 0, forfeit: true };
   }
   const sa = +scoreARaw, sb = +scoreBRaw;
   if (scoreARaw === '' || scoreARaw == null || scoreBRaw === '' || scoreBRaw == null || isNaN(sa) || isNaN(sb)) {
@@ -1907,7 +1932,7 @@ function schedCatMatches(m, mode) {
 function schedOQRounds(regionKey, base) {
   const region = OQ_REGIONS.find(r => r.key === regionKey);
   if (!region) return [];
-  const re = new RegExp('^' + region.prefix + '\\s+(\\d+)$', 'i');
+  const re = new RegExp('^' + region.oqPrefix + '\\s+(\\d+)$', 'i');
   const rounds = new Set();
   base.forEach(m => {
     const mt = String(m.match_id||'').trim().match(re);
@@ -1922,8 +1947,8 @@ function schedFilteredMatches() {
   if (S.schedMode === 'oq' && S.schedRegion) {
     const region = OQ_REGIONS.find(r => r.key === S.schedRegion);
     if (region) {
-      ms = ms.filter(m => String(m.match_id||'').trim().toUpperCase().startsWith(region.prefix.toUpperCase()+' '));
-      if (S.schedOQ) ms = ms.filter(m => String(m.match_id||'').trim() === `${region.prefix} ${S.schedOQ}`);
+      ms = ms.filter(m => String(m.match_id||'').trim().toUpperCase().startsWith(region.oqPrefix.toUpperCase()+' '));
+      if (S.schedOQ) ms = ms.filter(m => String(m.match_id||'').trim() === `${region.oqPrefix} ${S.schedOQ}`);
     }
   }
   return ms;
@@ -2121,7 +2146,7 @@ function promoRelSection(title, periodKey) {
     const match = base.find(mm => schedCatMatches(mm, 'oq') && (sameTeam(mm.team_a_id) || sameTeam(mm.team_b_id)));
     if (!match) return null;
     const mid = String(match.match_id||'').trim().toUpperCase();
-    const region = OQ_REGIONS.find(rg => mid.startsWith(rg.prefix.toUpperCase()+' '));
+    const region = OQ_REGIONS.find(rg => mid.startsWith(rg.oqPrefix.toUpperCase()+' '));
     return region ? region.label : null;
   };
   const rows = matches.map(m => {
@@ -3752,8 +3777,12 @@ function openOQModal(regionKey, groupId) {
   if (!group) return;
 
   const rows = group.matches.map(m => {
-    const teamA = S.teams[m.team_a_id] || S.teams[(m.team_a_id||'').toLowerCase()] || { team_name: dn(m.team_a_id) || '?' };
-    const teamB = S.teams[m.team_b_id] || S.teams[(m.team_b_id||'').toLowerCase()] || { team_name: dn(m.team_b_id) || '?' };
+    // m.A/m.B are already resolved (by enrichScheduleRows()) against the team
+    // name this row was actually recorded under, not just whatever S.teams
+    // currently says - a fresh id-only lookup here would silently rename a past
+    // qualifier every time the roster changes.
+    const teamA = m.A || { team_name: dn(m.team_a_id) || '?' };
+    const teamB = m.B || { team_name: dn(m.team_b_id) || '?' };
     const r = parseMatchResult(m.score_a, m.score_b);
     const aWon = r.hasResult && r.aWon;
     const bWon = r.hasResult && !r.aWon;
@@ -3769,8 +3798,11 @@ function openOQModal(regionKey, groupId) {
 </div>`;
   }).join('');
 
-  const winnerLine = group.winnerTeam
-    ? `<div class="mo-bc" style="margin-top:8px">Qualified to Continentals: <span style="color:var(--acc)">${group.winnerTeam.team_name}</span></div>`
+  const qualifiedNames = group.winnerTeam
+    ? (group.bothQualify && group.loserTeam ? [group.winnerTeam.team_name, group.loserTeam.team_name] : [group.winnerTeam.team_name])
+    : [];
+  const winnerLine = qualifiedNames.length
+    ? `<div class="mo-bc" style="margin-top:8px">Qualified to Continentals: <span style="color:var(--acc)">${qualifiedNames.join(', ')}</span></div>`
     : `<div class="mo-bc" style="margin-top:8px">In progress</div>`;
 
   document.getElementById('modal-content').innerHTML = `
