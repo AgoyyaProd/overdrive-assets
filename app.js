@@ -1674,8 +1674,12 @@ function oqGroups(regionKey, splitId) {
       // matters on this site (Standings, Barrage/Up&Down).
       const winnerId = lastResult ? (lastResult.aWon ? last.team_a_id : last.team_b_id) : null;
       const winnerTeam = lastResult ? (lastResult.aWon ? last.A : last.B) : null;
-      const loserId = lastResult ? (lastResult.aWon ? last.team_b_id : last.team_a_id) : null;
-      const loserTeam = lastResult ? (lastResult.aWon ? last.B : last.A) : null;
+      // A walkover round (one side's team_id literally "BYE") never has a real
+      // "loser" - without this, EMEA's bothQualify rule would try to send "BYE"
+      // itself to Continentals as if it were a team.
+      const rawLoserId = lastResult ? (lastResult.aWon ? last.team_b_id : last.team_a_id) : null;
+      const loserId = isByeTeamId(rawLoserId) ? null : rawLoserId;
+      const loserTeam = isByeTeamId(rawLoserId) ? null : (lastResult ? (lastResult.aWon ? last.B : last.A) : null);
       const roundNum = +((id.match(/(\d+)\s*$/) || [])[1] || 0);
       // EMEA's Open Qualifier sends BOTH the winner and the loser of each
       // bracket's last match to Continentals; every other region only sends the
@@ -3744,8 +3748,12 @@ function openOQModal(regionKey, groupId) {
     // name this row was actually recorded under, not just whatever S.teams
     // currently says - a fresh id-only lookup here would silently rename a past
     // qualifier every time the roster changes.
-    const teamA = m.A || { team_name: dn(m.team_a_id) || '?' };
-    const teamB = m.B || { team_name: dn(m.team_b_id) || '?' };
+    // A walkover round has a real match row where one side's team_id is the
+    // literal string "BYE" (empty slot, odd bracket size) - resolveHistoricalTeam()
+    // has no team registered under that id, so it would otherwise fall through
+    // to showing "BYE" itself as if it were the opponent's name.
+    const teamA = isByeTeamId(m.team_a_id) ? { team_name: 'Bye' } : (m.A || { team_name: dn(m.team_a_id) || '?' });
+    const teamB = isByeTeamId(m.team_b_id) ? { team_name: 'Bye' } : (m.B || { team_name: dn(m.team_b_id) || '?' });
     const r = parseMatchResult(m.score_a, m.score_b);
     const aWon = r.hasResult && r.aWon;
     const bWon = r.hasResult && !r.aWon;
