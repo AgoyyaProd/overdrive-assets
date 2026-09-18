@@ -2473,11 +2473,15 @@ ${lbHtml ? `<div class="bkt-section"><div class="bkt-section-title">Lower Bracke
 // for Overdrive-Points bookkeeping): each row carries its region in the "event"
 // column (e.g. "EMEA", "Oceasia", "NCSA") - matched here against the region's
 // label/prefix/key (any of the three, case-insensitively) so this doesn't care
-// which exact spelling the sheet uses. Falls back to cross-referencing that
-// region's own Swiss stage participants only for rows with no event value at
-// all (e.g. older data entered before this column existed).
+// which exact spelling the sheet uses.
+// Only rows with a real, region-matching "event" value count as a genuine Final
+// Standings block for this region/split - Final Standings must only appear once
+// WEBSITE_STANDINGS actually has a Rank/Team/OVPTS block for it (organizer-
+// confirmed: 2026-09-18). This used to also fall back to cross-referencing that
+// region's own Swiss stage participants for rows with a blank event value, but
+// that fallback could pick up unrelated/placeholder rows (no event tag at all)
+// and render a "Final Standings" table before the real one exists - removed.
 function continentalsStandingsSection(regionKey, splitId) {
-  const sp = splitId || S.act;
   const rows = S.continentalsStandings || [];
   if (!rows.length) return '';
   const region = OQ_REGIONS.find(r => r.key === regionKey);
@@ -2489,19 +2493,14 @@ function continentalsStandingsSection(regionKey, splitId) {
   // fallback (a prefix shared by both the correct and misspelled forms).
   const wantedNames = [region?.key, region?.label, region?.prefix].filter(Boolean).map(s => s.trim().toLowerCase());
   if (regionKey === 'AMERICAS') wantedNames.push('amer');
-  const withEvent = rows.filter(r => r.event != null && String(r.event).trim() !== '');
-  const noEvent = rows.filter(r => r.event == null || String(r.event).trim() === '');
-  let scoped = withEvent.filter(r => {
+  const scoped = rows.filter(r => {
+    if (r.event == null || String(r.event).trim() === '') return false;
     const ev = String(r.event).trim().toLowerCase();
     return wantedNames.some(w => ev.includes(w));
   });
-  if (noEvent.length) {
-    const swiss = swissData(regionKey, sp);
-    const regionTeamKeys = new Set(swiss.teams.map(t => t.key));
-    scoped = scoped.concat(noEvent.filter(r => regionTeamKeys.has(ctKey(r.team_id))));
-  }
   if (!scoped.length) return '';
   const hasRecord = scoped.some(r => r.matches_w != null && r.matches_w !== '');
+  const sp = splitId || S.act;
   const trs = scoped.map(r => {
     const team = teamFor(r.team || r.team_id, sp);
     const logo = `<div class="tlogo-box">${tlogo(team, 90)}</div>`;
