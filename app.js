@@ -573,13 +573,32 @@ function classifyEvent(eventRaw) {
     const matchId = [region, round].filter(Boolean).join(' ').trim().toUpperCase() || e.toUpperCase();
     return { division: 'Open Qualifier', matchId };
   }
-  const ctMatch = e.match(/continentals\s*(.*)/i);
-  if (ctMatch) {
-    const rest = (ctMatch[1] || '').trim();
-    return { division: 'Continentals', matchId: rest || e };
+  // Sheet convention (confirmed live via WEBSITE_STANDINGS' own event column) is
+  // singular "Continental" + region + stage, e.g. "Continental EMEA Playoffs" /
+  // "Continental Oceasia Playoffs" / "Continental Amercias Playoffs" (sheet typo
+  // for Americas) - not the plural "Continentals" this used to require.
+  if (/continental/.test(el)) {
+    const stageMatch = el.match(/\b(swiss|playoffs?)\b/);
+    const stage = stageMatch ? (stageMatch[1].startsWith('playoff') ? 'Playoffs' : 'Swiss') : '';
+    const region = resolveOqRegionFromText(el);
+    const matchId = region && stage ? `${region.prefix} ${stage}` : (e.replace(/continental s?/i, '').trim() || e);
+    return { division: 'Continentals', matchId };
   }
   // Unrecognized event text: pass it through as-is rather than silently dropping the row.
   return { division: e, matchId: '' };
+}
+// Tolerantly matches a region name found anywhere in free-text event copy
+// against OQ_REGIONS, the same substring approach continentalsStandingsSection()
+// uses for WEBSITE_STANDINGS' event column, including the "amer" fallback for
+// the sheet's "Amercias" typo (Americas).
+function resolveOqRegionFromText(text) {
+  const t = String(text || '').toLowerCase();
+  for (const region of OQ_REGIONS) {
+    const names = [region.key, region.label, region.prefix].filter(Boolean).map(s => s.toLowerCase());
+    if (region.key === 'AMERICAS') names.push('amer');
+    if (names.some(n => t.includes(n))) return region;
+  }
+  return null;
 }
 // WEBSITE_MATCHES' own "split" column holds a season word ("spring"/"fall"),
 // while WEBSITE_STANDINGS's metadata rows (and everything keyed off S.splits/
@@ -643,8 +662,11 @@ function enrichScheduleRows(rows) {
     ...r,
     status: (()=>{ const s=(r.status||'').trim().toLowerCase(); const map={'done':'DONE','completed':'DONE','complete':'DONE','live':'LIVE','confirmed':'confirmed','scheduled':'confirmed','check':'CHECK','pending':'pending','cancelled':'cancelled','canceled':'cancelled'}; return map[s]||s; })(),
     dO: pd(r.date),
-    A: S.teams[(r.team_a_id||'').toLowerCase()] || S.teams[r.team_a_id] || {team_name:r.team_a_id, logo_url:S.defaultLogo},
-    B: S.teams[(r.team_b_id||'').toLowerCase()] || S.teams[r.team_b_id] || {team_name:r.team_b_id, logo_url:S.defaultLogo}
+    // WEBSITE_MATCHES carries its own teamA_name/teamB_name per row too (see
+    // resolveHistoricalTeam) - a rebrand shouldn't rewrite an old match's
+    // result to show a name the team didn't have yet, same as Standings.
+    A: resolveHistoricalTeam(r.team_a_id, r.team_a_name),
+    B: resolveHistoricalTeam(r.team_b_id, r.team_b_name),
   })).sort((a, b) => (a.dO||new Date(0)) - (b.dO||new Date(0)));
 }
 async function buildScheduleForSplit(sp) {
@@ -1201,28 +1223,31 @@ async function lArt() {
   });
 }
 async function lVod() { S.vods = []; } // VODs tab removed
-// A Standings row (Div1/2 or Continentals) carries its OWN team_name cell,
-// recorded at the time that split was played - a team's current roster/brand
-// in data_teams can move on from it (a rebrand, a merge) without the sheet's
-// past splits ever being rewritten, on purpose: Spring 2026 should always
-// show the teams exactly as they were in Spring 2026, not retroactively
-// wearing whatever name they carry today. So the row's own team_name (passed
-// in as team_name_raw, when the caller has one) wins over data_teams'
+// A Standings row (Div1/2 or Continentals) - and, just as much, a Matches row
+// (WEBSITE_MATCHES' own teamA_name/teamB_name columns) - carries its OWN
+// team_name, recorded at the time that split/match happened. A team's
+// current roster/brand in data_teams can move on from it (a rebrand, a
+// merge) without the sheet's past rows ever being rewritten, on purpose:
+// Spring 2026's standings AND its match results should always show the
+// teams exactly as they were in Spring 2026, not retroactively wearing
+// whatever name they carry today (confirmed directly against the live sheet:
+// 2026-09-18 - "GenG x Weibo" on both WEBSITE_STANDINGS' Spring Div1 row and
+// its own Spring WEBSITE_MATCHES rows for TEAM_0004, current data_teams name
+// "Weibo x FUT"). So the row's own recorded name wins over data_teams'
 // current name whenever the two disagree; data_teams still supplies the
-// logo/tag/roster/etc, since the sheet doesn't carry a historical logo. The
+// logo/tag/roster/etc, since neither sheet carries a historical logo. The
 // "Formerly X" note is dropped in that case too - it would read backwards
 // when the name already being shown IS the old one.
-function en(r) {
-  const id = r.team_id;
+function resolveHistoricalTeam(id, histNameRaw) {
   const base = S.teams[id] || S.teams[(id||'').toLowerCase()] || S.teams[(id||'').toUpperCase()] || null;
-  const histName = r.team_name_raw ? dn(r.team_name_raw) : '';
-  let team;
+  const histName = histNameRaw ? dn(histNameRaw) : '';
   if (histName && (!base || base.team_name !== histName)) {
-    team = base ? { ...base, team_name: histName, _note: '' } : { team_name: histName, logo_url: S.defaultLogo };
-  } else {
-    team = base || { team_name: id || '?', logo_url: S.defaultLogo };
+    return base ? { ...base, team_name: histName, _note: '' } : { team_name: histName, logo_url: S.defaultLogo };
   }
-  return { ...r, team };
+  return base || { team_name: id || '?', logo_url: S.defaultLogo };
+}
+function en(r) {
+  return { ...r, team: resolveHistoricalTeam(r.team_id, r.team_name_raw) };
 }
 
 // ─── HELPERS ───────────────────────────────────────────────────────────────
