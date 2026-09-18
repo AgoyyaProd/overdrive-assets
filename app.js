@@ -136,7 +136,19 @@ async function lActiveSplitFromMatches() {
   const rows = t2o(t).filter(r => r.split != null && String(r.split).trim() !== '');
   if (!rows.length) return;
   const last = rows[rows.length - 1];
-  S.act = String(last.split).trim();
+  // WEBSITE_MATCHES' own "split" column holds a season word ("spring"/"fall"),
+  // NOT the numeric split_id ("1"/"2") that WEBSITE_STANDINGS's metadata rows
+  // use and that S.splits/loadWebsiteStandings() key everything by (confirmed
+  // directly against a live GViz fetch: 2026-09-18) - translated the same way
+  // normalizeMatchRow() translates it onto every schedule row's own .split
+  // field, so S.act and m.split always speak the same vocabulary. Setting
+  // S.act straight to the raw word (as this used to) made it a key nothing in
+  // S.splits matched, so buildStandingsForSplit(S.act) always fell back to
+  // empty - the Home page (which reads S.act before the user ever touches the
+  // split selector) showed "Data not available" for exactly this reason,
+  // while the full Standings page only worked once a manual split click
+  // overwrote S.act with a real "1"/"2".
+  S.act = seasonTextToSplitId(last.split);
   S.configActiveSplit = S.act;
   if (last.season) S.seasonYear = String(last.season).trim();
 }
@@ -558,6 +570,27 @@ function classifyEvent(eventRaw) {
   // Unrecognized event text: pass it through as-is rather than silently dropping the row.
   return { division: e, matchId: '' };
 }
+// WEBSITE_MATCHES' own "split" column holds a season word ("spring"/"fall"),
+// while WEBSITE_STANDINGS's metadata rows (and everything keyed off S.splits/
+// S.act/S.schedSplit - the split selectors on Standings, Schedule and VODs)
+// use the numeric split_id ("1"/"2") instead (confirmed directly against a
+// live GViz fetch: 2026-09-18). Without translating one into the other here,
+// every "m.split === <some split id>" comparison anywhere in the codebase
+// silently matches nothing - which is what made the Home page's Standings
+// preview (S.act, resolved before any split selector is touched) always come
+// up empty, and would equally break the Schedule page's own split filter.
+// Same odd/even convention as loadWebsiteStandings()'s season-label
+// derivation: split 1 = Spring, split 2 = Fall. Passes anything already
+// numeric straight through (e.g. if the sheet ever stores split ids directly).
+function seasonTextToSplitId(text) {
+  const s = String(text ?? '').trim();
+  if (s === '') return s;
+  if (!isNaN(+s)) return s;
+  const low = s.toLowerCase();
+  if (low.startsWith('spr')) return '1';
+  if (low.startsWith('fal') || low.startsWith('aut')) return '2';
+  return s;
+}
 // Maps one WEBSITE_MATCHES row (t2o-normalized keys: teama_id/teamb_id/
 // teama_score/teamb_score/time/event/trackN_name/trackN_a_score/trackN_b_score/...)
 // onto the legacy field names the rest of the codebase already reads
@@ -575,7 +608,7 @@ function normalizeMatchRow(r) {
     time_cest: r.time || r.time_cest || '',
     division,
     match_id: matchId,
-    split: r.split != null ? String(r.split).trim() : r.split,
+    split: seasonTextToSplitId(r.split),
   };
   for (let i = 1; i <= 5; i++) {
     if (out[`track${i}_a_score`] != null) out[`track${i}_a`] = out[`track${i}_a_score`];
