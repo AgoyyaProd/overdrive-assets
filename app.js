@@ -1009,114 +1009,44 @@ function currentSeasonYear() {
   const active = (S.splits || []).find(s => s.split_id === (S.configActiveSplit || S.act));
   return splitYear(active) || S.seasonYear || String(new Date().getFullYear());
 }
+// Overpoints are spread across every block of WEBSITE_STANDINGS: the Div 1 and
+// Div 2 tables (each row's overdrive_points column) plus the three Continentals
+// blocks (AMERICAS/EMEA/APAC) - all already parsed by loadWebsiteStandings(),
+// which is the single source of truth for this tab now that the old per-split
+// "Standings_Spring2026"/"Continentals_Spring2026" tabs no longer exist. Every
+// team's own overdrive_points from every block of every split in the season
+// year is summed by team_id - simpler and more reliable than the old
+// column-scanning approach this replaced, which depended on tab names this
+// sheet doesn't use any more (confirmed live: 2026-09-18).
 async function lOver(forYear) {
-  const { byName, norm } = buildTeamNameIndex();
-
   const year = forYear || S.overYear || currentSeasonYear();
   S.overYear = year;
 
-  const totals = {};   // normalised name -> { name, pts, sources[] }
-  const seen = new Set();   // guards against a row being read by two detection paths
-  const add = (rawName, pts, source, rowIdx) => {
-    const name = String(rawName||'').trim();
-    const p = +pts;
-    if (!name || !isFinite(p) || p === 0) return;
-    const key = norm(name);
-    if (!key) return;
-    // The divisional mapping and the region scan can both land on the same cell, so
-    // an identical team/points pair from the same row is only counted once.
-    const dedupe = `${source}|${rowIdx}|${key}|${p}`;
-    if (seen.has(dedupe)) return;
-    seen.add(dedupe);
-    if (!totals[key]) totals[key] = { team_name: dn(name), pts: 0, sources: [] };
-    totals[key].pts += p;
-    if (!totals[key].sources.includes(source)) totals[key].sources.push(source);
-  };
-
-  // Pairs each OVPTS column with the nearest team_id column to its left. Matched
-  // loosely (startsWith) rather than by exact equality, since Sheets silently
-  // renames repeated header labels in the same row ("team_id" → "team_id_1",
-  // "team_id2"...) to keep them unique - three side-by-side region blocks sharing
-  // one header row is exactly that case, and an exact match would only ever catch
-  // the first block's untouched original label.
-  const pairFrom = labelList => {
-    const teamCols = [], ovCols = [];
-    labelList.forEach((l, i) => {
-      if (l === 'team_id' || l.startsWith('team_id')) teamCols.push(i);
-      if (l === 'ovpts' || l.startsWith('ovpts'))      ovCols.push(i);
-    });
-    return ovCols.map(ov => ({ ov, team: [...teamCols].reverse().find(c => c < ov) }))
-                 .filter(p => p.team != null);
-  };
-  const REGIONS = ['americas', 'emea', 'apac', 'ncsa'];
-
-  // Scans one GViz table for OVPTS, wherever it lives in the tab. A tab can carry:
-  //   1. header-labelled team_id/ovpts columns (divisional blocks, or a Continentals
-  //      tab that has real headers of its own);
-  //   2. an in-data header row announcing team_id/ovpts further down the sheet;
-  //   3. bare region rows (division | rank | team_id | OVPTS) with no header at all.
-  // All three are checked for every tab so Continentals data is picked up regardless
-  // of which tab (or block within a tab) it currently lives in.
-  const scanTabForOvpts = (t, source) => {
-    if (!t) return;
-    const labels = (t.cols || []).map(c => String(c?.label || '').trim().toLowerCase());
-    const rows = t.rows.filter(r => r.c?.some(c => c?.v != null));
-    const headerMapping = pairFrom(labels);
-    let embedded = null;   // mapping picked up from an in-data header row, if any
-
-    rows.forEach((r, ri) => {
-      const cells = (r.c || []).map(c => String(c?.v ?? '').trim().toLowerCase());
-      if (cells.some(v => v === 'team_id' || v.startsWith('team_id')) && cells.some(v => v === 'ovpts' || v.startsWith('ovpts'))) {
-        embedded = pairFrom(cells); return;
-      }
-
-      headerMapping.forEach(p => add(cv(r, p.team), cv(r, p.ov), source, ri));
-      if (embedded) embedded.forEach(p => add(cv(r, p.team), cv(r, p.ov), source, ri));
-
-      // Fallback for region rows no header row announced. A tab can have several
-      // region blocks side by side on the SAME row (AMERICAS | ... | EMEA | ... |
-      // APAC | ...), so every region match in the row is walked in turn - not just
-      // the first - each one reading the next text cell as the team name and the
-      // next number after that as the points (layout: division | rank | team_id |
-      // OVPTS), stopping before the following region label so one block's scan
-      // never reads into its neighbour's columns.
-      cells.forEach((v, regionAt) => {
-        if (!REGIONS.includes(v)) return;
-        let team = null, pts = null;
-        for (let i = regionAt + 1; i < cells.length; i++) {
-          if (REGIONS.includes(cells[i])) break; // ran into the next region block
-          const raw = cv(r, i);
-          if (raw == null || String(raw).trim() === '') continue;
-          if (team == null) {
-            if (isNaN(+raw)) team = raw;        // skip the rank number, take the name
-            continue;
-          }
-          if (!isNaN(+raw)) { pts = +raw; break; }
-        }
-        if (team != null && pts != null) add(team, pts, source, ri);
-      });
-    });
-  };
-
-  // Only this season's splits count towards the total.
+  const { bySplit } = await loadWebsiteStandings();
+  // Only this season's splits count towards the total - Overpoints resets when
+  // the next season begins (the Power Ranking is career-wide and deliberately
+  // not filtered this way).
   const seasonSplits = (S.splits || []).filter(sp => splitYear(sp) === year);
-  for (const sp of seasonSplits) {
-    const standingsTabName = sp.standings_tab || 'Standings_Spring2026';
-    scanTabForOvpts(await gv(standingsTabName), sp.split_id);
 
-    // Continentals now live in their own tab (e.g. "Continentals_Spring2026"), named
-    // by swapping the "Standing(s)" prefix of the standings tab for "Continentals".
-    // A tab can also declare it explicitly via a 'continentals_tab' column in Splits.
-    const continentalsTabName = sp.continentals_tab
-      || standingsTabName.replace(/^Standings?/i, 'Continentals');
-    if (continentalsTabName && continentalsTabName !== standingsTabName) {
-      scanTabForOvpts(await gv(continentalsTabName), sp.split_id);
-    }
-  }
+  const totals = {};   // team_id -> { team_id, team_name, pts, sources[] }
+  const add = (row, splitId) => {
+    if (!row || !row.team_id) return;
+    const pts = +row.overdrive_points;
+    if (!isFinite(pts) || pts === 0) return;
+    const key = row.team_id;
+    if (!totals[key]) totals[key] = { team_id: key, team_name: row.team?.team_name || key, pts: 0, sources: [] };
+    totals[key].pts += pts;
+    if (!totals[key].sources.includes(splitId)) totals[key].sources.push(splitId);
+  };
+  seasonSplits.forEach(sp => {
+    const block = bySplit[sp.split_id];
+    if (!block) return;
+    [...(block.d1 || []), ...(block.d2 || []), ...(block.continentals || [])].forEach(row => add(row, sp.split_id));
+  });
 
   S.over = Object.values(totals)
     .map(o => {
-      const base = byName[norm(o.team_name)] || null;
+      const base = S.teams[o.team_id] || S.teams[o.team_id.toLowerCase()] || S.teams[o.team_id.toUpperCase()] || null;
       // Overpoints is a cumulative, current-moment ranking (not tied to one split
       // the way Standings is), so the name shown is whatever the team is called
       // right now - resolved through teamFor() so a Team_History override for the
