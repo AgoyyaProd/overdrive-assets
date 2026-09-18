@@ -736,6 +736,7 @@ async function loadWebsiteStandings() {
           built.push(en({
             rank: cv(rows[j], off.rank),
             team_id: String(teamId).toLowerCase(),
+            team_name_raw: cv(rows[j], off.team_name),
             overdrive_points: cv(rows[j], off.overdrive_points),
             event: cv(rows[j], off.event),
             champion: false,
@@ -810,6 +811,7 @@ async function loadWebsiteStandings() {
           built.push(en({
             rank: cv(rows[j], off.rank),
             team_id: String(teamId).toLowerCase(),
+            team_name_raw: cv(rows[j], off.team_name),
             matches_p: cv(rows[j], off.matches),
             matches_w: cv(rows[j], off.wins),
             matches_l: cv(rows[j], off.losses),
@@ -1188,7 +1190,29 @@ async function lArt() {
   });
 }
 async function lVod() { S.vods = []; } // VODs tab removed
-function en(r) { const id=r.team_id; const team=S.teams[id]||S.teams[(id||'').toLowerCase()]||S.teams[(id||'').toUpperCase()]||{team_name:id||'?',logo_url:S.defaultLogo}; return {...r, team}; }
+// A Standings row (Div1/2 or Continentals) carries its OWN team_name cell,
+// recorded at the time that split was played - a team's current roster/brand
+// in data_teams can move on from it (a rebrand, a merge) without the sheet's
+// past splits ever being rewritten, on purpose: Spring 2026 should always
+// show the teams exactly as they were in Spring 2026, not retroactively
+// wearing whatever name they carry today. So the row's own team_name (passed
+// in as team_name_raw, when the caller has one) wins over data_teams'
+// current name whenever the two disagree; data_teams still supplies the
+// logo/tag/roster/etc, since the sheet doesn't carry a historical logo. The
+// "Formerly X" note is dropped in that case too - it would read backwards
+// when the name already being shown IS the old one.
+function en(r) {
+  const id = r.team_id;
+  const base = S.teams[id] || S.teams[(id||'').toLowerCase()] || S.teams[(id||'').toUpperCase()] || null;
+  const histName = r.team_name_raw ? dn(r.team_name_raw) : '';
+  let team;
+  if (histName && (!base || base.team_name !== histName)) {
+    team = base ? { ...base, team_name: histName, _note: '' } : { team_name: histName, logo_url: S.defaultLogo };
+  } else {
+    team = base || { team_name: id || '?', logo_url: S.defaultLogo };
+  }
+  return { ...r, team };
+}
 
 // ─── HELPERS ───────────────────────────────────────────────────────────────
 function ytth(u) { const m = u?.match(/(?:youtu\.be\/|youtube\.com\/(?:watch\?v=|embed\/|shorts\/))([^&?/\s]+)/); return m ? `https://img.youtube.com/vi/${m[1]}/hqdefault.jpg` : null; }
