@@ -639,6 +639,12 @@ function isStandingsBlockBoundary(row) {
   const c0s = String(c0 ?? '').trim().toLowerCase();
   return c0s === 'division' || c0s === 'event';
 }
+// "BYE" (team_id literally "BYE" in the sheet, team_name "-") marks an empty
+// slot in a division with an odd team count, not a real team - it should
+// never appear as a standings row.
+function isByeTeamId(teamId) {
+  return String(teamId ?? '').trim().toLowerCase() === 'bye';
+}
 let _standingsCache = null; // { bySplit: { '1': {d1,d2}, ... }, splits: [{split_id,label}] }
 async function loadWebsiteStandings() {
   if (_standingsCache) return _standingsCache;
@@ -653,13 +659,19 @@ async function loadWebsiteStandings() {
       const r = rows[i];
       const c0 = cv(r, 0), c1 = cv(r, 1);
       // Metadata row: "2026 | 1 | Division 1 | ..." - a year-sized number in col A
-      // and a small split number in col B. The very next row carries the same
-      // split as a text label ("spring"/"fall" in col B) used only for display.
+      // and a small split number in col B. There's no "spring"/"fall" text
+      // anywhere in the live sheet's own rows to read for a season name
+      // (confirmed directly against a live GViz fetch: 2026-09-18 - the row
+      // right after this one, which an older version of this comment claimed
+      // carried it in col B, is actually blank there; its only text is
+      // "(api transform)" in col D) - so the season name is derived from the
+      // split number by the site's own convention (odd = Spring, even = Fall)
+      // instead, combined with the real year straight from col A.
       if (c0 != null && c0 !== '' && !isNaN(+c0) && +c0 > 1900 && c1 != null && c1 !== '' && !isNaN(+c1)) {
         currentSplitId = String(c1).trim();
-        const labelText = String(cv(rows[i + 1], 1) || '').trim();
         if (currentSplitId && !splitsSeen.some(s => s.split_id === currentSplitId)) {
-          splitsSeen.push({ split_id: currentSplitId, label: labelText ? (labelText[0].toUpperCase() + labelText.slice(1) + ' ' + c0) : ('Split ' + currentSplitId) });
+          const seasonName = (+currentSplitId % 2 === 0) ? 'Fall' : 'Spring';
+          splitsSeen.push({ split_id: currentSplitId, label: seasonName + ' ' + c0 });
         }
         continue;
       }
@@ -684,6 +696,7 @@ async function loadWebsiteStandings() {
           if (isStandingsBlockBoundary(rows[j])) break;
           const teamId = cv(rows[j], off.team_id);
           if (teamId == null || teamId === '') break;
+          if (isByeTeamId(teamId)) { j++; continue; }
           built.push(en({
             rank: cv(rows[j], off.rank),
             team_id: String(teamId).toLowerCase(),
@@ -755,6 +768,9 @@ async function loadWebsiteStandings() {
           const teamId = cv(rows[j], off.team_id);
           if (teamId == null || teamId === '') break;
           if (!divCellRaw) divCellRaw = String(cv(rows[j], startCol) ?? '').trim();
+          // "BYE" is a placeholder slot (an odd team count in that division),
+          // not a real team - it shouldn't show up as a standings row at all.
+          if (isByeTeamId(teamId)) { j++; continue; }
           built.push(en({
             rank: cv(rows[j], off.rank),
             team_id: String(teamId).toLowerCase(),
