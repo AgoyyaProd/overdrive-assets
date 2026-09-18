@@ -745,28 +745,37 @@ async function loadWebsiteStandings() {
         continue;
       }
       // Continentals block: a different header shape entirely - its first cell
-      // is "event" (not "division"), it has no metadata row of its own (it
-      // inherits currentSplitId from whichever Div1/2 block preceded it), and
-      // its rows carry the region as a free-text phrase (e.g. "Continental
-      // EMEA Playoffs" - note the live sheet also has a typo, "Amercias" for
-      // "Americas") rather than a bare code, matched loosely in
-      // continentalsStandingsSection(). Like the Div1/2 blocks, its header row
-      // leaves the "rank" cell blank even though the rank data itself is
-      // there, and its overdrive_points column is mislabeled "team_name_stored"
-      // (confirmed directly against a live GViz fetch: 2026-09-18) - so, same
-      // fix as Div1/2, this is read positionally (event, rank, team_id,
-      // team_name, overdrive_points, in that fixed order) rather than by label.
+      // is "event" (not "division"), and its rows carry the region as a
+      // free-text phrase (e.g. "Continental EMEA Playoffs" - note the live
+      // sheet also has a typo, "Amercias" for "Americas") rather than a bare
+      // code, matched loosely in continentalsStandingsSection(). Like the
+      // Div1/2 blocks, its header row leaves several cells blank/mislabeled
+      // even though the data itself is there, so this is read positionally.
+      // The block sits physically right after whichever Division block
+      // happens to be last in the sheet, with no split-metadata row of its
+      // own in between - trusting currentSplitId here silently misattributed
+      // every Continentals result to whatever split's Division block preceded
+      // it (confirmed live: 2026-09-18). The organizer added a "split" column
+      // to this block specifically to fix that (spring/fall text, same as
+      // WEBSITE_MATCHES), so each row's OWN split column is now authoritative
+      // when present; falls back to currentSplitId only for older sheets/rows
+      // that don't have that column yet.
       if (String(c0 ?? '').trim().toLowerCase() === 'event') {
-        const off = { event: 0, rank: 1, team_id: 2, team_name: 3, overdrive_points: 4 };
+        const hasSplitCol = String(cv(r, 1) ?? '').trim().toLowerCase() === 'split';
+        const off = hasSplitCol
+          ? { event: 0, split: 1, rank: 2, team_id: 3, team_name: 4, overdrive_points: 6 }
+          : { event: 0, rank: 1, team_id: 2, team_name: 3, overdrive_points: 4 };
         if (String(cv(r, off.team_id) ?? '').trim().toLowerCase() !== 'team_id') continue;
         let j = i + 1;
-        const built = [];
+        const bySplitGroup = {};
         while (j < rows.length) {
           if (isStandingsBlockBoundary(rows[j])) break;
           const teamId = cv(rows[j], off.team_id);
           if (teamId == null || teamId === '') break;
           if (isByeTeamId(teamId)) { j++; continue; }
-          built.push(en({
+          const rowSplitRaw = hasSplitCol ? cv(rows[j], off.split) : null;
+          const rowSplitId = rowSplitRaw != null && rowSplitRaw !== '' ? seasonTextToSplitId(rowSplitRaw) : currentSplitId;
+          (bySplitGroup[rowSplitId] = bySplitGroup[rowSplitId] || []).push(en({
             rank: cv(rows[j], off.rank),
             team_id: String(teamId).toLowerCase(),
             team_name_raw: cv(rows[j], off.team_name),
@@ -776,9 +785,11 @@ async function loadWebsiteStandings() {
           }));
           j++;
         }
-        built.sort((a, b) => +a.rank - +b.rank);
-        if (!bySplit[currentSplitId]) bySplit[currentSplitId] = { d1: [], d2: [], continentals: [] };
-        bySplit[currentSplitId].continentals = bySplit[currentSplitId].continentals.concat(built);
+        Object.entries(bySplitGroup).forEach(([sid, group]) => {
+          group.sort((a, b) => +a.rank - +b.rank);
+          if (!bySplit[sid]) bySplit[sid] = { d1: [], d2: [], continentals: [] };
+          bySplit[sid].continentals = bySplit[sid].continentals.concat(group);
+        });
         continue;
       }
       if (String(c0 ?? '').trim().toLowerCase() !== 'division') continue;
