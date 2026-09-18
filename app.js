@@ -1070,7 +1070,10 @@ function slugify(s) {
     .replace(/^-+|-+$/g, '') || 'article';
 }
 async function lArt() {
-  const t = await gv('Articles');
+  // Renamed from "Articles" to "WEBSITE_ARTICLES" as part of the sheet's move
+  // to unified WEBSITE_* tabs (confirmed live: 2026-09-18) - same columns, pure
+  // rename, no content or shape change.
+  const t = await gv('WEBSITE_ARTICLES');
   if (!t) { S.art = []; console.warn('[Art] No data from GViz'); return; }
   const raw = t2o(t);
   S.art = raw.filter(r => r.status?.toLowerCase() === 'published' && r.title).map(a => {
