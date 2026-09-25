@@ -1906,12 +1906,14 @@ function schedFilteredMatches() {
   let ms = S.schedAllRows;
   if (S.schedSplit !== 'all') ms = ms.filter(m => m.split === S.schedSplit);
   ms = ms.filter(m => schedCatMatches(m, S.schedMode));
-  // Open Qualifier forfeits (W/L, W/FF) are dropped from the Schedule entirely -
-  // organizer-requested: 2026-09-18, Open Qualifier ONLY, never Continentals or
-  // any other event. schedCatMatches(m,'oq') (not S.schedMode) decides this, so
-  // the rule holds in every tab a forfeited OQ match could appear in (its own
-  // "Open Qualifier" tab and "All"), not just while the OQ filter is active.
-  ms = ms.filter(m => !schedCatMatches(m, 'oq') || !parseMatchResult(m.score_a, m.score_b).forfeit);
+  // Forfeited matches (W/FF, W/L, either direction) and bye slots (one side's
+  // team_id literally "BYE") are dropped from the Schedule entirely, in every
+  // division - organizer-requested 2026-09-18 for Open Qualifier only, then
+  // widened 2026-09-25 after the same pattern showed up on Division 1/2 too
+  // (a forfeited game, or a "BYE" opponent row like the odd-team-count filler
+  // in Division 2, isn't a real match to show on the schedule).
+  ms = ms.filter(m => !parseMatchResult(m.score_a, m.score_b).forfeit);
+  ms = ms.filter(m => !isByeTeamId(m.team_a_id) && !isByeTeamId(m.team_b_id));
   if (S.schedMode === 'oq' && S.schedRegion) {
     const region = OQ_REGIONS.find(r => r.key === S.schedRegion);
     if (region) {
