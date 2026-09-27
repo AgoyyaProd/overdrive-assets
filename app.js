@@ -1902,18 +1902,24 @@ function schedOQRounds(regionKey, base) {
   });
   return [...rounds].sort((a,b) => a-b);
 }
+// Forfeited matches (W/FF, W/L, either direction) and bye slots (one side's
+// team_id literally "BYE") aren't real matches to show anywhere match cards are
+// listed - Schedule, and the Home page's Upcoming/Recent sections, which read
+// S.homeSched/S.sched directly rather than going through schedFilteredMatches()
+// (organizer-requested 2026-09-18 for Open Qualifier only, widened 2026-09-25
+// to every division after the same pattern showed up on Division 1/2, then
+// again to the Home page 2026-09-25 after an Americas OQ bye still showed up
+// there).
+function isDisplayableMatch(m) {
+  if (parseMatchResult(m.score_a, m.score_b).forfeit) return false;
+  if (isByeTeamId(m.team_a_id) || isByeTeamId(m.team_b_id)) return false;
+  return true;
+}
 function schedFilteredMatches() {
   let ms = S.schedAllRows;
   if (S.schedSplit !== 'all') ms = ms.filter(m => m.split === S.schedSplit);
   ms = ms.filter(m => schedCatMatches(m, S.schedMode));
-  // Forfeited matches (W/FF, W/L, either direction) and bye slots (one side's
-  // team_id literally "BYE") are dropped from the Schedule entirely, in every
-  // division - organizer-requested 2026-09-18 for Open Qualifier only, then
-  // widened 2026-09-25 after the same pattern showed up on Division 1/2 too
-  // (a forfeited game, or a "BYE" opponent row like the odd-team-count filler
-  // in Division 2, isn't a real match to show on the schedule).
-  ms = ms.filter(m => !parseMatchResult(m.score_a, m.score_b).forfeit);
-  ms = ms.filter(m => !isByeTeamId(m.team_a_id) && !isByeTeamId(m.team_b_id));
+  ms = ms.filter(isDisplayableMatch);
   if (S.schedMode === 'oq' && S.schedRegion) {
     const region = OQ_REGIONS.find(r => r.key === S.schedRegion);
     if (region) {
@@ -2203,7 +2209,7 @@ function pgHome() {
   const live = liveMatch();
   // Safety net: fall back to the generic (already-loaded) data if the home-specific
   // split fetch hasn't resolved yet or came back empty for any reason.
-  const homeSchedSafe = S.homeSched.length ? S.homeSched : S.sched;
+  const homeSchedSafe = (S.homeSched.length ? S.homeSched : S.sched).filter(isDisplayableMatch);
   const homeD1Safe = S.homeD1.length ? S.homeD1 : S.d1;
   const homeD2Safe = S.homeD2.length ? S.homeD2 : S.d2;
   const rows = S.homeStDiv==='1' ? homeD1Safe : homeD2Safe;
