@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Generated from PAGE_FILE_MAP in app.js - every entry there is a real,
+  separately-indexable file at the domain root (see the routing comment in
+  app.js). Keep this list in sync when a page/sub combination is added,
+  removed, or renamed there. The dynamic "article|" route (individual news
+  articles, addressed by ?slug=...) is intentionally left out: there's no
+  fixed URL per article to list here without a build step.
+-->
+<urlset xmlns="https://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://overdrivegg.com/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>
+  <url><loc>https://overdrivegg.com/schedule.html</loc><changefreq>daily</changefreq><priority>0.9</priority></url>
+  <url><loc>https://overdrivegg.com/standings-div1.html</loc><changefreq>daily</changefreq><priority>0.9</priority></url>
+  <url><loc>https://overdrivegg.com/standings-div2.html</loc><changefreq>daily</changefreq><priority>0.9</priority></url>
+  <url><loc>https://overdrivegg.com/leagues-emea.html</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://overdrivegg.com/leagues-apac.html</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://overdrivegg.com/leagues-americas.html</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://overdrivegg.com/schedule-div1.html</loc><changefreq>weekly</changefreq><priority>0.6</priority></url>
+  <url><loc>https://overdrivegg.com/schedule-div2.html</loc><changefreq>weekly</changefreq><priority>0.6</priority></url>
+  <url><loc>https://overdrivegg.com/schedule-oq.html</loc><changefreq>weekly</changefreq><priority>0.6</priority></url>
+  <url><loc>https://overdrivegg.com/schedule-oq-emea.html</loc><changefreq>weekly</changefreq><priority>0.5</priority></url>
+  <url><loc>https://overdrivegg.com/schedule-oq-apac.html</loc><changefreq>weekly</changefreq><priority>0.5</priority></url>
+  <url><loc>https://overdrivegg.com/schedule-oq-americas.html</loc><changefreq>weekly</changefreq><priority>0.5</priority></url>
+  <url><loc>https://overdrivegg.com/teams.html</loc><changefreq>weekly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://overdrivegg.com/overpoints.html</loc><changefreq>weekly</changefreq><priority>0.6</priority></url>
+  <url><loc>https://overdrivegg.com/news.html</loc><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>https://overdrivegg.com/articles.html</loc><changefreq>daily</changefreq><priority>0.7</priority></url>
+  <url><loc>https://overdrivegg.com/vods.html</loc><changefreq>weekly</changefreq><priority>0.6</priority></url>
+  <url><loc>https://overdrivegg.com/about.html</loc><changefreq>monthly</changefreq><priority>0.5</priority></url>
+  <url><loc>https://overdrivegg.com/howtoplay.html</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>
+  <url><loc>https://overdrivegg.com/media.html</loc><changefreq>monthly</changefreq><priority>0.4</priority></url>
+  <url><loc>https://overdrivegg.com/contact.html</loc><changefreq>yearly</changefreq><priority>0.3</priority></url>
+  <url><loc>https://overdrivegg.com/legal.html</loc><changefreq>yearly</changefreq><priority>0.2</priority></url>
+  <url><loc>https://overdrivegg.com/privacy.html</loc><changefreq>yearly</changefreq><priority>0.2</priority></url>
+</urlset>
